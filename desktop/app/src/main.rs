@@ -384,6 +384,19 @@ fn install_panic_logging() {
     }));
 }
 
+/// Installs the translation for the system locale. Call after the
+/// `QGuiApplication` exists and before any QML engine loads: the QML is
+/// compiled ahead of time, so `qsTr()` is only resolved when a component is
+/// built, and installing first means every string is right on the first pass
+/// and nothing has to be retranslated.
+fn install_system_translator() {
+    let Some(dir) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) else {
+        return;
+    };
+    let installed = bridge::native::ffi::install_system_translator(&dir.to_string_lossy());
+    tracing::debug!(installed, "system translator");
+}
+
 /// The installer's or uninstaller's window: no core, no data folder, no log
 /// file (removal deletes that folder).
 fn run_setup_window(mode: setup::Mode) -> ExitCode {
@@ -404,6 +417,7 @@ fn run_setup_window(mode: setup::Mode) -> ExitCode {
         app.as_mut().set_application_name(&QString::from("NectarLink Setup"));
         app.as_mut().set_application_version(&QString::from(env!("CARGO_PKG_VERSION")));
     }
+    install_system_translator();
     bridge::native::ffi::load_bundled_fonts();
     for size in [16, 20, 24, 32, 40, 48, 64, 256] {
         bridge::native::ffi::add_app_icon_image(size, &mark::render(size as usize));
@@ -587,6 +601,7 @@ fn main() -> ExitCode {
         app.as_mut().set_application_name(&QString::from("Nectarlink"));
         app.as_mut().set_application_version(&QString::from(env!("CARGO_PKG_VERSION")));
     }
+    install_system_translator();
     bridge::native::ffi::keep_running_without_windows();
     // Text falls back to system fonts if these are missing, so it's not fatal.
     let fonts = bridge::native::ffi::load_bundled_fonts();

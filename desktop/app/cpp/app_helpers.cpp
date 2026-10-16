@@ -2,10 +2,15 @@
 #include "app_helpers.h"
 #include "video_view.h"
 
+#include <QtCore/QCoreApplication>
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
+#include <QtCore/QLibraryInfo>
+#include <QtCore/QLocale>
 #include <QtCore/QMimeData>
 #include <QtCore/QPointer>
+#include <QtCore/QStringList>
+#include <QtCore/QTranslator>
 #include <QtCore/QUrl>
 #include <QtCore/QtEnvironmentVariables>
 #include <QtGui/QDrag>
@@ -171,6 +176,44 @@ bool start_external_drag(rust::Str file_path, rust::Str text_fallback)
     if (!dragPixmap.isNull())
         drag.setPixmap(dragPixmap);
     return drag.exec(Qt::CopyAction) != Qt::IgnoreAction;
+}
+
+bool install_system_translator(rust::Str dir)
+{
+    const QString folder = QString::fromUtf8(dir.data(), static_cast<qsizetype>(dir.size()));
+    const QLocale locale = QLocale::system();
+
+    // Qt's own strings: file dialogs, context menus, the standard buttons.
+    // windeployqt stages a merged `qt_<locale>.qm` in `translations/` beside the
+    // executable, while a build from source finds `qtbase_<locale>.qm` in Qt's
+    // own folder, so try both names in both places.
+    const QStringList qtDirs{
+        folder + QStringLiteral("/translations"),
+        QLibraryInfo::path(QLibraryInfo::TranslationsPath),
+    };
+    bool qtInstalled = false;
+    for (const QString &qtDir : qtDirs) {
+        for (const char *name : {"qtbase", "qt"}) {
+            auto *qt = new QTranslator(QCoreApplication::instance());
+            if (qt->load(locale, QString::fromLatin1(name), QStringLiteral("_"), qtDir)) {
+                QCoreApplication::installTranslator(qt);
+                qtInstalled = true;
+                break;
+            }
+            delete qt;
+        }
+        if (qtInstalled)
+            break;
+    }
+
+    // NectarLink's own strings, staged beside the executable. A locale with no
+    // translation (`nectarlink_es_ES.qm` missing) simply stays English.
+    auto *app = new QTranslator(QCoreApplication::instance());
+    if (!app->load(locale, QStringLiteral("nectarlink"), QStringLiteral("_"), folder)) {
+        delete app;
+        return false;
+    }
+    return QCoreApplication::installTranslator(app);
 }
 
 
