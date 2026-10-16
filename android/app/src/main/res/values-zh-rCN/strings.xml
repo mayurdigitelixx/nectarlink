@@ -707,7 +707,7 @@
     <string name="walkthrough_pair_nearby_tap">点按以在本地网络中配对</string>
     <string name="walkthrough_pair_usb_title">USB 自动配对</string>
     <string name="walkthrough_pair_usb_hint">连接 USB 数据线并启用 USB 调试即可自动配对。</string>
-    <string name="walkthrough_power_title">选择省电级别</string>
+    <string name="walkthrough_power_title">选择权限级别</string>
     <string name="walkthrough_power_subtitle">选择你的 Windows 11 电脑对此手机拥有多少控制权。</string>
     <string name="walkthrough_power_current_badge">当前：%1$s</string>
     <string name="walkthrough_power_badge_active">已启用</string>
