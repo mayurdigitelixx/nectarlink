@@ -184,7 +184,7 @@ fun DeskScreen(
                     onClick = onBack,
                     border = BorderStroke(1.dp, Color(0xFF282C37)),
                 ) {
-                    Text("Exit Desk Mode", color = Color(0xFFD1D5DB))
+                    Text(stringResource(R.string.desk_exit), color = Color(0xFFD1D5DB))
                 }
             }
 
@@ -208,7 +208,7 @@ fun DeskScreen(
                         ?: deckState?.outputDevices?.firstOrNull()?.name
                         ?: device.name
                     val songTitle = activeSummary?.title?.takeIf { it.isNotBlank() }
-                        ?: if (isPlaying) "PC Media · Playing" else "PC Media & Audio"
+                        ?: if (isPlaying) stringResource(R.string.desk_media_playing) else stringResource(R.string.desk_media_audio)
                     val subtitleText = buildString {
                         val sub = activeSummary?.subtitle?.trim().orEmpty()
                         if (sub.isNotEmpty()) {
@@ -427,7 +427,7 @@ fun DeskScreen(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     DeskActionButton(
-                        label = "PC Screen",
+                        label = stringResource(R.string.desk_pc_screen),
                         enabled = device.online,
                         onClick = { onOpenRemote(RemoteMode.Screen) },
                         modifier = Modifier.weight(1f),

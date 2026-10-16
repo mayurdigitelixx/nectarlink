@@ -133,11 +133,11 @@ fun SettingsScreen(
 
     val categories = remember {
         listOf(
-            "all" to "All",
-            "appearance" to "Appearance",
-            "devices" to "Devices",
-            "permissions" to "Permissions",
-            "features" to "Features & Data",
+            "all" to R.string.timeline_filter_all,
+            "appearance" to R.string.settings_appearance,
+            "devices" to R.string.settings_category_devices,
+            "permissions" to R.string.walkthrough_permissions_title,
+            "features" to R.string.settings_category_features,
         )
     }
 
@@ -200,7 +200,7 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.headlineMedium,
                     )
                     FilledTonalButton(onClick = onOpenFeaturesGuide) {
-                        Text("Features guide")
+                        Text(stringResource(R.string.guide_title))
                     }
                 }
                 Row(
@@ -214,7 +214,7 @@ fun SettingsScreen(
                         FilterChip(
                             selected = selected,
                             onClick = { activeCategory = id },
-                            label = { Text(label) },
+                            label = { Text(stringResource(label)) },
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
                                 selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -290,11 +290,12 @@ fun SettingsScreen(
                     if (appearance.theme == "bloom" || appearance.theme == "glass") {
                         SettingRowDivider()
                         val artworkSync = appearance.seed == "artwork"
+                        val artworkColorLabel = stringResource(R.string.settings_theme_artwork_color)
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                             Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                                Text("Media artwork color", style = MaterialTheme.typography.titleSmall)
+                                Text(stringResource(R.string.settings_theme_artwork_color), style = MaterialTheme.typography.titleSmall)
                                 Text(
-                                    "Sync app & glass colors with playing media artwork",
+                                    stringResource(R.string.settings_theme_artwork_body),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -307,7 +308,7 @@ fun SettingsScreen(
                                     }
                                 },
                                 colors = app.nectarlink.android.ui.theme.nectarSwitchColors(),
-                                modifier = Modifier.semantics { contentDescription = "Media artwork color" },
+                                modifier = Modifier.semantics { contentDescription = artworkColorLabel },
                             )
                         }
                         if (!artworkSync && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -399,6 +400,7 @@ fun SettingsScreen(
 
                                 // Compact inline AMOLED toggle pill inside the swatch row when Black seed is selected
                                 if (blackSwatchSelected) {
+                                    val amoledLabel = stringResource(R.string.settings_amoled)
                                     Surface(
                                         shape = RoundedCornerShape(20.dp),
                                         color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -427,7 +429,7 @@ fun SettingsScreen(
                                                         scaleX = 0.76f
                                                         scaleY = 0.76f
                                                     }
-                                                    .semantics { contentDescription = "Pure black (AMOLED)" },
+                                                    .semantics { contentDescription = amoledLabel },
                                             )
                                         }
                                     }
@@ -499,12 +501,12 @@ fun SettingsScreen(
                     }
                     FilledTonalButton(onClick = onPairNew) { Text(stringResource(R.string.action_pair_new)) }
                     SettingRowDivider()
-                    val mobileDataTitle = "Connect over mobile data"
+                    val mobileDataTitle = stringResource(R.string.guide_away_title)
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.weight(1f).padding(end = 12.dp)) {
                             Text(mobileDataTitle, style = MaterialTheme.typography.titleSmall)
                             Text(
-                                "Stay connected over LTE/5G or relay when away from Wi-Fi",
+                                stringResource(R.string.settings_mobile_data_body),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -624,12 +626,12 @@ fun SettingsScreen(
                     val context = LocalContext.current
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text("Background clipboard access", style = MaterialTheme.typography.titleSmall)
+                            Text(stringResource(R.string.settings_background_clipboard_title), style = MaterialTheme.typography.titleSmall)
                             Text(
                                 if (state.elevated) {
-                                    "Active via Wireless Debugging · clipboard syncs automatically"
+                                    stringResource(R.string.settings_wireless_debugging_active)
                                 } else {
-                                    "Allow Wireless Debugging so clipboard can sync in the background, or use Send clipboard in the notification"
+                                    stringResource(R.string.settings_wireless_debugging_hint)
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -866,29 +868,29 @@ fun SettingsScreen(
                 Section(stringResource(R.string.settings_about)) {
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text("Features guide", style = MaterialTheme.typography.titleSmall)
+                            Text(stringResource(R.string.guide_title), style = MaterialTheme.typography.titleSmall)
                             Text(
-                                "Browse every feature, check live requirements, or jump straight to its controls.",
+                                stringResource(R.string.settings_guide_card_body),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                         FilledTonalButton(onClick = onOpenFeaturesGuide) {
-                            Text("Open")
+                            Text(stringResource(R.string.clip_action_open))
                         }
                     }
                     SettingRowDivider()
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text("Setup walkthrough", style = MaterialTheme.typography.titleSmall)
+                            Text(stringResource(R.string.guide_open_walkthrough), style = MaterialTheme.typography.titleSmall)
                             Text(
-                                "Reopen the setup guide for permissions, pairing, and power levels.",
+                                stringResource(R.string.settings_walkthrough_body),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                         OutlinedButton(onClick = onOpenWalkthrough) {
-                            Text("Open")
+                            Text(stringResource(R.string.clip_action_open))
                         }
                     }
                     SettingRowDivider()

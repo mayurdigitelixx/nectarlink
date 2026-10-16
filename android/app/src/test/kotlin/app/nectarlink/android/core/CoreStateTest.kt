@@ -298,13 +298,13 @@ class CoreStateTest {
         val multiline = "First line\r\nSecond line\nThird\rFourth   with   spaces"
         assertEquals(
             "First line Second line Third Fourth with spaces",
-            formatQueueItemTitle(app.nectarlink.core.FfiQueueKind.CLIPBOARD, multiline, maxChars = 64),
+            formatQueueItemTitle(multiline, "Clipboard", maxChars = 64),
         )
 
         val longClipboard = "Line one\nLine two with extra words that exceed the maximum character budget"
         val formatted = formatQueueItemTitle(
-            app.nectarlink.core.FfiQueueKind.CLIPBOARD,
             longClipboard,
+            "Clipboard",
             maxChars = 24,
         )
         assertTrue(!formatted.contains('\n'))
@@ -314,7 +314,7 @@ class CoreStateTest {
 
         assertEquals(
             "Clipboard",
-            formatQueueItemTitle(app.nectarlink.core.FfiQueueKind.CLIPBOARD, " \r\n\t "),
+            formatQueueItemTitle(" \r\n\t ", "Clipboard"),
         )
     }
 

@@ -1263,6 +1263,41 @@
     <string name="update_done_text">Tap to open it. Your PCs reconnect on their own.</string>
     <string name="update_auto_title">Install updates automatically</string>
     <string name="update_auto_text">New versions from GitHub install in the background.</string>
+
+    <string name="home_guide_title">Guide</string>
+    <string name="home_whats_new_guide">What is new: Features guide</string>
+    <string name="home_guide_card_body">Explore every NectarLink feature, check live permissions, or tap Show me to jump straight to any control.</string>
+    <string name="home_no_pc_paired">No PC paired yet</string>
+    <string name="home_no_pc_body">Open NectarLink on your Windows or Linux PC to pair by QR code or local discovery, or reopen the setup walkthrough.</string>
+    <string name="home_background_clipboard_title">Background clipboard &amp; full control</string>
+    <string name="home_background_clipboard_body">Sync clipboard in the background and enable touch control via Wireless Debugging.</string>
+    <string name="home_section_screen">Screen, Camera &amp; Input</string>
+    <string name="home_section_transfer">Quick Transfer &amp; Clipboard</string>
+    <string name="home_section_system">System &amp; Power</string>
+    <string name="settings_category_devices">Devices</string>
+    <string name="settings_category_features">Features &amp; Data</string>
+    <string name="settings_theme_artwork_color">Media artwork color</string>
+    <string name="settings_mobile_data_body">Stay connected over LTE/5G or relay when away from Wi-Fi</string>
+    <string name="settings_background_clipboard_title">Background clipboard access</string>
+    <string name="settings_guide_card_body">Browse every feature, check live requirements, or jump straight to its controls.</string>
+    <string name="settings_walkthrough_body">Reopen the setup guide for permissions, pairing, and power levels.</string>
+    <string name="desk_exit">Exit Desk Mode</string>
+    <string name="desk_media_playing">PC Media · Playing</string>
+    <string name="desk_media_audio">PC Media &amp; Audio</string>
+    <string name="desk_pc_screen">PC Screen</string>
+    <string name="queue_kind_clipboard">Clipboard</string>
+    <string name="queue_kind_clipboard_image">Clipboard image</string>
+    <string name="queue_kind_files">Files</string>
+    <string name="queue_kind_folder">Folder</string>
+    <string name="queue_kind_link">Link</string>
+    <string name="queue_kind_document">Document</string>
+    <string name="queue_kind_recording">Recording</string>
+    <string name="queue_kind_task_alert">Task alert</string>
+    <string name="queue_kind_camera_request">Camera request</string>
+
+    <string name="settings_theme_artwork_body">Sync app &amp; glass colors with playing media artwork</string>
+    <string name="settings_wireless_debugging_active">Active via Wireless Debugging · clipboard syncs automatically</string>
+    <string name="settings_wireless_debugging_hint">Allow Wireless Debugging so clipboard can sync in the background, or use Send clipboard in the notification</string>
 </resources>
 
 

@@ -305,7 +305,7 @@ fun HomeScreen(
                     onClick = onOpenFeaturesGuide,
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                 ) {
-                    Text("Guide")
+                    Text(stringResource(R.string.home_guide_title))
                 }
                 // Reconnects and syncs with the PCs; spins once to say so.
                 val spin = remember { androidx.compose.animation.core.Animatable(0f) }
@@ -742,12 +742,12 @@ private fun WhatsNewFeaturesGuideCard(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(
-            text = "What is new: Features guide",
+            text = stringResource(R.string.home_whats_new_guide),
             style = MaterialTheme.typography.titleMedium,
             color = MaterialTheme.colorScheme.onSecondaryContainer,
         )
         Text(
-            text = "Explore every NectarLink feature, check live permissions, or tap Show me to jump straight to any control.",
+            text = stringResource(R.string.home_guide_card_body),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSecondaryContainer,
         )
@@ -756,10 +756,10 @@ private fun WhatsNewFeaturesGuideCard(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Button(onClick = onOpenGuide) {
-                Text("Open features guide")
+                Text(stringResource(R.string.walkthrough_action_open_guide))
             }
             OutlinedButton(onClick = onDismiss) {
-                Text("Dismiss")
+                Text(stringResource(R.string.action_dismiss))
             }
         }
     }
@@ -846,12 +846,12 @@ private fun NoPairedPcCard(
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Text(
-            text = "No PC paired yet",
+            text = stringResource(R.string.home_no_pc_paired),
             style = MaterialTheme.typography.headlineSmall,
             color = MaterialTheme.colorScheme.onPrimaryContainer,
         )
         Text(
-            text = "Open NectarLink on your Windows or Linux PC to pair by QR code or local discovery, or reopen the setup walkthrough.",
+            text = stringResource(R.string.home_no_pc_body),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onPrimaryContainer,
         )
@@ -864,10 +864,10 @@ private fun NoPairedPcCard(
                 Text(stringResource(R.string.action_pair_new))
             }
             FilledTonalButton(onClick = onOpenWalkthrough) {
-                Text("Setup walkthrough")
+                Text(stringResource(R.string.guide_open_walkthrough))
             }
             OutlinedButton(onClick = onOpenFeaturesGuide) {
-                Text("Features guide")
+                Text(stringResource(R.string.guide_title))
             }
         }
     }
@@ -1078,8 +1078,8 @@ private fun PermissionsSetupCard(
                 }
                 if (!state.elevated) {
                     SetupCard(
-                        title = "Background clipboard & full control",
-                        text = "Sync clipboard in the background and enable touch control via Wireless Debugging.",
+                        title = stringResource(R.string.home_background_clipboard_title),
+                        text = stringResource(R.string.home_background_clipboard_body),
                         secondaryLabel = stringResource(R.string.elevated_open_developer),
                         onSecondary = { openDeveloperOptions(context) },
                     ) {
@@ -1315,7 +1315,7 @@ private fun PcCard(
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 // 1. Primary Workspace Bento Grid (2x2): Control PC, Deck, Desk Mode, Webcam
                 Text(
-                    text = "Screen, Camera & Input",
+                    text = stringResource(R.string.home_section_screen),
                     style = MaterialTheme.typography.labelSmall,
                     color = ink.copy(alpha = 0.68f),
                     modifier = Modifier.padding(start = 2.dp),
@@ -1393,7 +1393,7 @@ private fun PcCard(
 
                 // 2. Files & Clipboard Bento Strip (Always visible, no hidden expander)
                 Text(
-                    text = "Quick Transfer & Clipboard",
+                    text = stringResource(R.string.home_section_transfer),
                     style = MaterialTheme.typography.labelSmall,
                     color = ink.copy(alpha = 0.68f),
                     modifier = Modifier.padding(start = 2.dp, top = 2.dp),
@@ -1496,7 +1496,7 @@ private fun PcCard(
 
                 // 4. Utilities & Power Row (Voice Memo, Ring PC, Lock, Sleep)
                 Text(
-                    text = "System & Power",
+                    text = stringResource(R.string.home_section_system),
                     style = MaterialTheme.typography.labelSmall,
                     color = ink.copy(alpha = 0.68f),
                     modifier = Modifier.padding(start = 2.dp, top = 2.dp),
@@ -2389,7 +2389,8 @@ private fun SendQueueRow(
     } else {
         null
     }
-    val displayTitle = remember(item.kind, item.title) { formatQueueItemTitle(item.kind, item.title) }
+    val queueFallback = stringResource(queueKindLabel(item.kind))
+    val displayTitle = remember(item.title, queueFallback) { formatQueueItemTitle(item.title, queueFallback) }
     val statusText = when (status) {
         is FfiQueueStatus.Waiting -> stringResource(R.string.send_queue_waiting_for, item.peerName)
         is FfiQueueStatus.Sending -> if (progressPercent != null) {
@@ -3559,4 +3560,17 @@ private fun ButtonLabel(text: String) {
         overflow = TextOverflow.Ellipsis,
         autoSize = TextAutoSize.StepBased(minFontSize = 11.sp, maxFontSize = size, stepSize = 0.5.sp),
     )
+}
+
+/** The localized fallback label for a queue item whose title is empty. */
+private fun queueKindLabel(kind: FfiQueueKind): Int = when (kind) {
+    FfiQueueKind.CLIPBOARD -> R.string.queue_kind_clipboard
+    FfiQueueKind.CLIPBOARD_IMAGE -> R.string.queue_kind_clipboard_image
+    FfiQueueKind.FILES -> R.string.queue_kind_files
+    FfiQueueKind.FOLDER -> R.string.queue_kind_folder
+    FfiQueueKind.LINK -> R.string.queue_kind_link
+    FfiQueueKind.HANDOFF_DOCUMENT -> R.string.queue_kind_document
+    FfiQueueKind.RECORDING -> R.string.queue_kind_recording
+    FfiQueueKind.TASK_NOTIFY -> R.string.queue_kind_task_alert
+    FfiQueueKind.CAMERA_REQUEST -> R.string.queue_kind_camera_request
 }

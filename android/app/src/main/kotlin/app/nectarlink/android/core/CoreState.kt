@@ -53,7 +53,7 @@ internal fun FfiQueueKind.isFileBacked(): Boolean = when (this) {
 }
 
 /** Normalizes multi-line queue titles to a single clean line for display. */
-fun formatQueueItemTitle(kind: FfiQueueKind, title: String, maxChars: Int = 44): String {
+fun formatQueueItemTitle(title: String, fallback: String, maxChars: Int = 44): String {
     val singleLine = title
         .replace("\r\n", " ")
         .replace('\n', ' ')
@@ -61,17 +61,7 @@ fun formatQueueItemTitle(kind: FfiQueueKind, title: String, maxChars: Int = 44):
         .replace(Regex("\\s+"), " ")
         .trim()
     if (singleLine.isEmpty()) {
-        return when (kind) {
-            FfiQueueKind.CLIPBOARD -> "Clipboard"
-            FfiQueueKind.CLIPBOARD_IMAGE -> "Clipboard image"
-            FfiQueueKind.FILES -> "Files"
-            FfiQueueKind.FOLDER -> "Folder"
-            FfiQueueKind.LINK -> "Link"
-            FfiQueueKind.HANDOFF_DOCUMENT -> "Document"
-            FfiQueueKind.RECORDING -> "Recording"
-            FfiQueueKind.TASK_NOTIFY -> "Task alert"
-            FfiQueueKind.CAMERA_REQUEST -> "Camera request"
-        }
+        return fallback
     }
     return if (singleLine.length > maxChars && maxChars > 3) {
         singleLine.take(maxChars - 3).trimEnd() + "..."
