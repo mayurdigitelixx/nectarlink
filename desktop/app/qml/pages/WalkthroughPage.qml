@@ -320,7 +320,7 @@ FocusScope {
             }
 
             Button {
-                text: "Skip setup"
+                text: qsTr("Skip setup")
                 variant: "tonal"
                 size: "sm"
                 visible: walkthrough.step < walkthrough.totalSteps - 1
@@ -718,22 +718,22 @@ FocusScope {
                                     model: [
                                         {
                                             icon: Icons.bell,
-                                            title: "Notifications and Calls",
+                                            title: qsTr("Notifications and Calls"),
                                             body: "Reply to notifications, read SMS threads, and answer calls from your PC."
                                         },
                                         {
                                             icon: Icons.send,
-                                            title: "Clipboard and Send files",
+                                            title: qsTr("Clipboard and Send files"),
                                             body: "Copy text or images once, or drop files and folders at full Wi-Fi speed."
                                         },
                                         {
                                             icon: Icons.mirror,
-                                            title: "Mirroring, Camera, and Audio",
+                                            title: qsTr("Mirroring, Camera, and Audio"),
                                             body: "Stream your phone screen, use your phone as a webcam, or route PC audio."
                                         },
                                         {
                                             icon: Icons.lock,
-                                            title: "Direct local QUIC link",
+                                            title: qsTr("Direct local QUIC link"),
                                             body: "Everything runs directly between your devices with zero cloud accounts."
                                         }
                                     ]
@@ -845,17 +845,17 @@ FocusScope {
                                 model: [
                                     {
                                         icon: Icons.lock,
-                                        title: "End-to-end encrypted over QUIC",
+                                        title: qsTr("End-to-end encrypted over QUIC"),
                                         body: "All traffic between your phone and PC uses TLS 1.3 with device certificates pinned during pairing."
                                     },
                                     {
                                         icon: Icons.shield,
-                                        title: "Hardware-backed device keys",
+                                        title: qsTr("Hardware-backed device keys"),
                                         body: "Device keys are protected by Windows DPAPI and the Android Keystore."
                                     },
                                     {
                                         icon: Icons.wifi,
-                                        title: "Local network by default",
+                                        title: qsTr("Local network by default"),
                                         body: "Pairing and transfers stay on your local network unless you turn on \"Connect over mobile data\", and automatic update checks can be turned off in Settings."
                                     }
                                 ]
@@ -952,7 +952,7 @@ FocusScope {
 
                                         Txt {
                                             Layout.fillWidth: true
-                                            text: "Option 1: Download the Android APK (Android 8.0+)"
+                                            text: qsTr("Option 1: Download the Android APK (Android 8.0+)")
                                             role: "title"
                                             wrapMode: Text.WordWrap
                                         }
@@ -960,7 +960,7 @@ FocusScope {
 
                                     Txt {
                                         Layout.fillWidth: true
-                                        text: "Open the latest GitHub Release on your phone or copy the release link."
+                                        text: qsTr("Open the latest GitHub Release on your phone or copy the release link.")
                                         role: "caption"
                                         color: Theme.surfaceContentVariant
                                         wrapMode: Text.WordWrap
@@ -971,7 +971,7 @@ FocusScope {
                                         spacing: 8
 
                                         Button {
-                                            text: "Open release page"
+                                            text: qsTr("Open release page")
                                             iconPath: Icons.openExternal
                                             variant: "tonal"
                                             size: "sm"
@@ -1032,7 +1032,7 @@ FocusScope {
 
                                         Txt {
                                             Layout.fillWidth: true
-                                            text: "Option 2: Install over USB with ADB"
+                                            text: qsTr("Option 2: Install over USB with ADB")
                                             role: "title"
                                             wrapMode: Text.WordWrap
                                         }
@@ -1119,7 +1119,8 @@ FocusScope {
 
                                     Txt {
                                         Layout.fillWidth: true
-                                        text: "Paired with " + (walkthrough.activeDeviceName || "your phone") + ". You can continue to the next step."
+                                        text: qsTr("Paired with %1. You can continue to the next step.")
+                                            .arg(walkthrough.activeDeviceName || qsTr("your phone"))
                                         role: "caption"
                                         color: Theme.surfaceContent
                                         elide: Text.ElideRight
@@ -1186,7 +1187,7 @@ FocusScope {
 
                                                 Txt {
                                                     Layout.fillWidth: true
-                                                    text: "On by default"
+                                                    text: qsTr("On by default")
                                                     role: "title"
                                                 }
                                             }
@@ -1249,7 +1250,7 @@ FocusScope {
 
                                                 Txt {
                                                     Layout.fillWidth: true
-                                                    text: "Off until you turn them on"
+                                                    text: qsTr("Off until you turn them on")
                                                     role: "title"
                                                 }
                                             }
@@ -1282,7 +1283,7 @@ FocusScope {
 
                                 Txt {
                                     Layout.fillWidth: true
-                                    text: "Change these per phone on Home after pairing."
+                                    text: qsTr("Change these per phone on Home after pairing.")
                                     role: "caption"
                                     color: Theme.surfaceContentVariant
                                 }
@@ -1296,7 +1297,7 @@ FocusScope {
 
                                 Txt {
                                     Layout.fillWidth: true
-                                    text: "Sharing settings for " + (walkthrough.activeDeviceName || "your phone")
+                                    text: qsTr("Sharing settings for %1").arg(walkthrough.activeDeviceName || qsTr("your phone"))
                                     role: "label"
                                     color: Theme.primary
                                 }
@@ -1326,18 +1327,18 @@ FocusScope {
 
                                             Txt {
                                                 Layout.fillWidth: true
-                                                text: "On by default"
+                                                text: qsTr("On by default")
                                                 role: "title"
                                             }
 
                                             Repeater {
                                                 model: [
-                                                    { key: "notifications", label: "Notifications" },
-                                                    { key: "clipboard", label: "Clipboard" },
-                                                    { key: "files", label: "Send files" },
-                                                    { key: "media", label: "Now playing" },
-                                                    { key: "sms", label: "Messages" },
-                                                    { key: "calls", label: "Calls" }
+                                                    { key: "notifications", label: qsTr("Notifications") },
+                                                    { key: "clipboard", label: qsTr("Clipboard") },
+                                                    { key: "files", label: qsTr("Send files") },
+                                                    { key: "media", label: qsTr("Now playing") },
+                                                    { key: "sms", label: qsTr("Messages") },
+                                                    { key: "calls", label: qsTr("Calls") }
                                                 ]
 
                                                 delegate: RowLayout {
@@ -1380,15 +1381,15 @@ FocusScope {
 
                                             Txt {
                                                 Layout.fillWidth: true
-                                                text: "Off until you turn them on"
+                                                text: qsTr("Off until you turn them on")
                                                 role: "title"
                                             }
 
                                             Repeater {
                                                 model: [
-                                                    { key: "pc_mirror", label: "Screen mirroring" },
-                                                    { key: "remote_input", label: "Remote input" },
-                                                    { key: "storage", label: "Share PC folders" }
+                                                    { key: "pc_mirror", label: qsTr("Screen mirroring") },
+                                                    { key: "remote_input", label: qsTr("Remote input") },
+                                                    { key: "storage", label: qsTr("Share PC folders") }
                                                 ]
 
                                                 delegate: RowLayout {
@@ -1460,7 +1461,7 @@ FocusScope {
 
                                         Txt {
                                             Layout.fillWidth: true
-                                            text: "Windows notifications"
+                                            text: qsTr("Windows notifications")
                                             role: "title"
                                         }
 
@@ -1479,7 +1480,7 @@ FocusScope {
                                         spacing: 8
 
                                         Button {
-                                            text: "Windows Settings"
+                                            text: qsTr("Windows Settings")
                                             variant: "tonal"
                                             size: "sm"
                                             visible: !AppController.toastsEnabled
@@ -1488,7 +1489,7 @@ FocusScope {
                                         }
 
                                         Button {
-                                            text: "Recheck"
+                                            text: qsTr("Recheck")
                                             iconPath: Icons.refresh
                                             variant: "text"
                                             size: "sm"
@@ -1538,13 +1539,13 @@ FocusScope {
 
                                         Txt {
                                             Layout.fillWidth: true
-                                            text: "Start with Windows"
+                                            text: qsTr("Start with Windows")
                                             role: "title"
                                         }
 
                                         Txt {
                                             Layout.fillWidth: true
-                                            text: "Keep NectarLink ready in the system tray when you sign in."
+                                            text: qsTr("Keep NectarLink ready in the system tray when you sign in.")
                                             role: "caption"
                                             color: Theme.surfaceContentVariant
                                             wrapMode: Text.WordWrap
@@ -1552,7 +1553,7 @@ FocusScope {
                                     }
 
                                     Toggle {
-                                        label: "Start with Windows"
+                                        label: qsTr("Start with Windows")
                                         checked: Preferences.startWithWindows
                                         onToggled: next => Preferences.startWithWindows = next
                                     }
@@ -1602,7 +1603,7 @@ FocusScope {
 
                                             Txt {
                                                 Layout.fillWidth: true
-                                                text: "Firewall and network check"
+                                                text: qsTr("Firewall and network check")
                                                 role: "title"
                                             }
 
@@ -1651,12 +1652,12 @@ FocusScope {
                                     },
                                     {
                                         icon: Icons.search,
-                                        title: "Command Palette (Ctrl+K)",
+                                        title: qsTr("Command Palette (Ctrl+K)"),
                                         body: "Press Ctrl+K from anywhere in the app to jump to features, send files, or run actions."
                                     },
                                     {
                                         icon: Icons.book,
-                                        title: "Features guide",
+                                        title: qsTr("Features guide"),
                                         body: "Browse every feature in NectarLink, see what permissions it needs, and jump straight to it."
                                     }
                                 ]
@@ -1729,7 +1730,7 @@ FocusScope {
             spacing: 12
 
             Button {
-                text: "Back"
+                text: qsTr("Back")
                 iconPath: Icons.back
                 variant: "tonal"
                 size: "md"
@@ -1741,7 +1742,7 @@ FocusScope {
             Item { Layout.fillWidth: true }
 
             Button {
-                text: "Open features guide"
+                text: qsTr("Open features guide")
                 iconPath: Icons.book
                 variant: "tonal"
                 size: "md"

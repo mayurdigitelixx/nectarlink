@@ -13,7 +13,7 @@ import app.nectarlink
 Window {
     id: shelfWin
 
-    title: "NectarLink Shelf"
+    title: qsTr("NectarLink Shelf")
     flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
     color: "transparent"
     visible: true

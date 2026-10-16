@@ -204,7 +204,7 @@ NativeWindow {
                 text: window.phase === "failed" ? Setup.message
                     : window.phase === "working" ? Setup.step
                     : window.removing
-                    ? qsTr("Sorry to see you go. This uninstalls NectarLink and deletes its settings and pairings on this PC. Files you received stay in Downloads\\Nectarlink.")
+                    ? qsTr("Sorry to see you go. This uninstalls NectarLink and deletes its settings and pairings on this PC. Files you received stay in %1.").arg("Downloads\\Nectarlink")
                     : Setup.kind === "update"
                     ? qsTr("Update from %1 to %2. Your settings and pairings stay as they are.").arg(Setup.installedVersion).arg(Setup.version)
                     : Setup.kind === "reinstall"
@@ -326,7 +326,7 @@ NativeWindow {
                 font.pixelSize: 15
                 color: window.muted
                 text: window.removing
-                    ? qsTr("Your received files are still in Downloads\\Nectarlink. Thanks for giving it a try.")
+                    ? qsTr("Your received files are still in %1. Thanks for giving it a try.").arg("Downloads\\Nectarlink")
                     : qsTr("Next, get the Android app. Scan this code with your phone's camera to open its download page.")
             }
 

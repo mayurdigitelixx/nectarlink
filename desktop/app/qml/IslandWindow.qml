@@ -13,7 +13,7 @@ import app.nectarlink
 Window {
     id: islandWin
 
-    title: "Nectar Island"
+    title: qsTr("Nectar Island")
     flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
     color: "transparent"
 

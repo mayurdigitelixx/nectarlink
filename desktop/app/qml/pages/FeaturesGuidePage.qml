@@ -88,12 +88,12 @@ Item {
     }
 
     readonly property var guideChapters: [
-        { key: "overview", label: "Overview" },
-        { key: "setup", label: "Setup" },
-        { key: "permissions", label: "Permissions" },
-        { key: "elevated", label: "Power levels" },
-        { key: "troubleshooting", label: "Troubleshooting" },
-        { key: "faq", label: "FAQ" }
+        { key: "overview", label: qsTr("Overview") },
+        { key: "setup", label: qsTr("Setup") },
+        { key: "permissions", label: qsTr("Permissions") },
+        { key: "elevated", label: qsTr("Power levels") },
+        { key: "troubleshooting", label: qsTr("Troubleshooting") },
+        { key: "faq", label: qsTr("FAQ") }
     ]
 
     readonly property var allFeatures: [
@@ -470,14 +470,14 @@ Item {
 
     readonly property var areaChips: [
         { id: "all", label: qsTr("All") },
-        { id: "notifications_calls", label: "Notifications & Calls" },
-        { id: "messages", label: "Messages" },
-        { id: "clipboard_files", label: "Clipboard & Files" },
-        { id: "mirroring_apps", label: "Mirroring & Apps" },
-        { id: "camera_audio", label: "Camera & Audio" },
-        { id: "input_control", label: "Input & Control" },
-        { id: "surfaces", label: "Desktop Surfaces" },
-        { id: "automation_network", label: "Automation & Network" }
+        { id: "notifications_calls", label: qsTr("Notifications & Calls") },
+        { id: "messages", label: qsTr("Messages") },
+        { id: "clipboard_files", label: qsTr("Clipboard & Files") },
+        { id: "mirroring_apps", label: qsTr("Mirroring & Apps") },
+        { id: "camera_audio", label: qsTr("Camera & Audio") },
+        { id: "input_control", label: qsTr("Input & Control") },
+        { id: "surfaces", label: qsTr("Desktop Surfaces") },
+        { id: "automation_network", label: qsTr("Automation & Network") }
     ]
 
     readonly property var filteredFeatures: {
@@ -502,55 +502,55 @@ Item {
         let _caps = AppController.capsRevision
         let _toggles = AppController.togglesRevision
         if (item.localAlways)
-            return { label: "Ready on PC", tone: "available", visible: true }
+            return { label: qsTr("Ready on PC"), tone: "available", visible: true }
         if (item.wolCheck) {
             let st = AppController.wakeState
             if (st === "enabled")
-                return { label: "Ready on PC", tone: "available", visible: true }
-            return { label: "Off in Settings", tone: "off", visible: true }
+                return { label: qsTr("Ready on PC"), tone: "available", visible: true }
+            return { label: qsTr("Off in Settings"), tone: "off", visible: true }
         }
         if (item.localsendCheck) {
             return AppController.localsendEnabled
-                ? { label: "Ready on PC", tone: "available", visible: true }
-                : { label: "Off in Settings", tone: "off", visible: true }
+                ? { label: qsTr("Ready on PC"), tone: "available", visible: true }
+                : { label: qsTr("Off in Settings"), tone: "off", visible: true }
         }
         if (item.prefKey && item.prefKey !== "") {
             let on = Boolean(Preferences[item.prefKey])
             return on
-                ? { label: "Ready on PC", tone: "available", visible: true }
-                : { label: "Off in Settings", tone: "off", visible: true }
+                ? { label: qsTr("Ready on PC"), tone: "available", visible: true }
+                : { label: qsTr("Off in Settings"), tone: "off", visible: true }
         }
         if (item.pcLocal && item.toggleKey === "storage") {
             if (!guide.hasConnectedPhone)
-                return { label: "Opt-in on Home", tone: "off", visible: true }
+                return { label: qsTr("Opt-in on Home"), tone: "off", visible: true }
         }
         if (!guide.hasConnectedPhone)
             return { label: "", tone: "neutral", visible: false }
         if (item.toggleKey && item.toggleKey !== "") {
             if (!guide.deviceTogglesMap[item.toggleKey])
-                return { label: "Off on Home", tone: "off", visible: true }
+                return { label: qsTr("Off on Home"), tone: "off", visible: true }
         }
         if (item.capKey && item.capKey !== "") {
             let st = AppController.featureState(guide.deviceId, item.capKey)
             let stateName = st ? (st.state || "") : ""
             let actionName = st ? (st.action || "") : ""
             if (stateName === "available")
-                return { label: "Ready", tone: "available", visible: true }
+                return { label: qsTr("Ready"), tone: "available", visible: true }
             if (stateName === "limited")
-                return { label: "Basic mode", tone: "basic", visible: true }
+                return { label: qsTr("Basic mode"), tone: "basic", visible: true }
             if (stateName === "unavailable") {
                 if (actionName === "enable_toggle")
-                    return { label: "Off on Home", tone: "off", visible: true }
+                    return { label: qsTr("Off on Home"), tone: "off", visible: true }
                 if (actionName === "grant_permission")
-                    return { label: "Needs phone permission", tone: "warn", visible: true }
+                    return { label: qsTr("Needs phone permission"), tone: "warn", visible: true }
                 if (actionName === "enable_elevated")
-                    return { label: "Needs Elevated", tone: "basic", visible: true }
+                    return { label: qsTr("Needs Elevated"), tone: "basic", visible: true }
                 if (actionName === "enable_assist")
-                    return { label: "Needs Assist", tone: "basic", visible: true }
-                return { label: "Needs phone permission", tone: "warn", visible: true }
+                    return { label: qsTr("Needs Assist"), tone: "basic", visible: true }
+                return { label: qsTr("Needs phone permission"), tone: "warn", visible: true }
             }
         }
-        return { label: "Ready", tone: "available", visible: true }
+        return { label: qsTr("Ready"), tone: "available", visible: true }
     }
 
     ColumnLayout {
@@ -569,7 +569,7 @@ Item {
 
             Txt {
                 Layout.fillWidth: true
-                text: "Every feature in NectarLink, what it needs, and where to find it."
+                text: qsTr("Every feature in NectarLink, what it needs, and where to find it.")
                 role: "body"
                 color: Theme.surfaceContentVariant
                 wrapMode: Text.WordWrap
@@ -608,7 +608,7 @@ Item {
                     }
 
                     Txt {
-                        text: "Read the full guide ›"
+                        text: qsTr("Read the full guide ›")
                         role: "label"
                         color: Theme.primary
                     }
@@ -616,7 +616,7 @@ Item {
             }
 
             Button {
-                text: "Setup walkthrough"
+                text: qsTr("Setup walkthrough")
                 iconPath: Icons.compass
                 variant: "tonal"
                 size: "sm"
@@ -651,7 +651,7 @@ Item {
 
                 Txt {
                     Layout.fillWidth: true
-                    text: "Connect your phone to see which features are ready"
+                    text: qsTr("Connect your phone to see which features are ready")
                     role: "body"
                     color: Theme.surfaceContent
                     elide: Text.ElideRight
@@ -700,7 +700,7 @@ Item {
 
                         Txt {
                             anchors.verticalCenter: parent.verticalCenter
-                            text: "Search features by name, location, or permission..."
+                            text: qsTr("Search features by name, location, or permission...")
                             role: "body"
                             muted: true
                             visible: searchInput.text.length === 0
@@ -710,7 +710,7 @@ Item {
                     IconButton {
                         iconPath: Icons.close
                         iconSize: 13
-                        label: "Clear search"
+                        label: qsTr("Clear search")
                         visible: searchInput.text.length > 0
                         onClicked: {
                             searchInput.text = ""
@@ -885,7 +885,7 @@ Item {
                                 Txt {
                                     id: showLabel
                                     anchors.centerIn: parent
-                                    text: "Show me"
+                                    text: qsTr("Show me")
                                     role: "label"
                                     color: Theme.primary
                                 }
@@ -913,7 +913,7 @@ Item {
                                 Txt {
                                     id: learnLabel
                                     anchors.centerIn: parent
-                                    text: "Learn more ›"
+                                    text: qsTr("Learn more ›")
                                     role: "label"
                                     color: learnHover.hovered ? Theme.primary : Theme.surfaceContentVariant
                                 }
@@ -932,7 +932,7 @@ Item {
                             spacing: 6
 
                             Txt {
-                                text: "Where:"
+                                text: qsTr("Where:")
                                 role: "caption"
                                 weight: 600
                                 muted: true
@@ -952,7 +952,7 @@ Item {
                             spacing: 6
 
                             Txt {
-                                text: "Needs:"
+                                text: qsTr("Needs:")
                                 role: "caption"
                                 weight: 600
                                 muted: true
@@ -978,13 +978,13 @@ Item {
 
                 Txt {
                     Layout.alignment: Qt.AlignHCenter
-                    text: "No matching features"
+                    text: qsTr("No matching features")
                     role: "title"
                 }
 
                 Txt {
                     Layout.alignment: Qt.AlignHCenter
-                    text: "Try another search term or select All above."
+                    text: qsTr("Try another search term or select All above.")
                     role: "bodySmall"
                     muted: true
                 }
@@ -1037,7 +1037,7 @@ Item {
 
                 IconButton {
                     iconPath: Icons.close
-                    label: "Close guide"
+                    label: qsTr("Close guide")
                     onClicked: AppController.closeGuideDoc()
                 }
             }
@@ -1108,7 +1108,7 @@ Item {
                 Layout.fillWidth: true
                 Item { Layout.fillWidth: true }
                 Button {
-                    text: "Close"
+                    text: qsTr("Close")
                     variant: "tonal"
                     size: "sm"
                     onClicked: AppController.closeGuideDoc()
