@@ -4845,8 +4845,8 @@
     </message>
     <message>
         <location filename="../qml/setup/SetupWindow.qml" line="214"/>
-        <source>Your Android phone and your Windows PC, working as one.</source>
-        <translation>让你的 Android 手机与 Windows 电脑合而为一。</translation>
+        <source>Your Android phone and your PC, working as one.</source>
+        <translation>让你的 Android 手机与电脑合而为一。</translation>
     </message>
     <message>
         <location filename="../qml/setup/SetupWindow.qml" line="256"/>
