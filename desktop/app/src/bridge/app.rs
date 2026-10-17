@@ -508,16 +508,22 @@ pub fn install_update_in_background() {
         }
         object.as_mut().set_update_busy(true);
         object.as_mut().set_update_progress(-1.0);
-        object.as_mut().set_update_status(QString::from("Downloading the update…"));
+        object
+            .as_mut()
+            .set_update_status(QString::from(crate::i18n::tr("App", "Downloading the update…").as_str()));
         let qt = object.qt_thread();
         std::thread::spawn(move || {
             let progress_qt = qt.clone();
             let result = crate::updater::install(move |done, total| {
                 let fraction = if total > 0 { (done as f64 / total as f64).clamp(0.0, 1.0) } else { -1.0 };
                 let text = if total > 0 {
-                    format!("Downloading the update · {} of {}", megabytes(done), megabytes(total))
+                    crate::i18n::tr_args(
+                        "App",
+                        "Downloading the update · %1 of %2",
+                        &[&megabytes(done), &megabytes(total)],
+                    )
                 } else {
-                    "Downloading the update…".to_owned()
+                    crate::i18n::tr("App", "Downloading the update…")
                 };
                 let _ = progress_qt.queue(move |mut object| {
                     object.as_mut().set_update_progress(fraction);
@@ -801,15 +807,17 @@ impl cxx_qt::Initialize for qobject::AppController {
             },
         );
 
+        // The tray menu is a native Win32 popup, so nothing translates it for
+        // us: the labels have to arrive already translated.
         let labels = tray::MenuLabels {
-            open: "Open NectarLink".into(),
-            command_palette: "Command palette".into(),
-            shelf: "Toggle Shelf".into(),
-            take_photo: "Take photo with phone".into(),
-            scan_document: "Scan document with phone".into(),
-            find_phone: "Find my phone".into(),
-            open_link: "Open copied link on phone".into(),
-            quit: "Quit NectarLink".into(),
+            open: crate::i18n::tr("Tray", "Open NectarLink"),
+            command_palette: crate::i18n::tr("Tray", "Command palette"),
+            shelf: crate::i18n::tr("Tray", "Toggle Shelf"),
+            take_photo: crate::i18n::tr("Tray", "Take photo with phone"),
+            scan_document: crate::i18n::tr("Tray", "Scan document with phone"),
+            find_phone: crate::i18n::tr("Tray", "Find my phone"),
+            open_link: crate::i18n::tr("Tray", "Open copied link on phone"),
+            quit: crate::i18n::tr("Tray", "Quit NectarLink"),
         };
         match tray::Tray::create("NectarLink", labels, move |event| on_tray_event(&qt, event)) {
             Ok(tray) => self.rust_mut().tray = Some(tray),
@@ -1057,7 +1065,7 @@ fn phone_colors_json(devices: &[crate::state::DeviceView]) -> String {
             "id": "",
             "key": "phone",
             "name": "",
-            "label": "My phone's colors",
+            "label": crate::i18n::tr("App", "My phone's colors"),
             "hasAccent": false,
             "scheme": serde_json::Value::Null,
         }])
@@ -1091,9 +1099,9 @@ fn phone_colors_json(devices: &[crate::state::DeviceView]) -> String {
             let id_str = d.id.to_string();
             let key = if multiple { format!("phone:{id_str}") } else { "phone".to_owned() };
             let label = if multiple {
-                format!("My phone's colors ({})", d.info.name)
+                crate::i18n::tr_args("App", "My phone's colors (%1)", &[&d.info.name])
             } else {
-                "My phone's colors".to_owned()
+                crate::i18n::tr("App", "My phone's colors")
             };
             serde_json::json!({
                 "id": id_str,

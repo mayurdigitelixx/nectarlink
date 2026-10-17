@@ -19,6 +19,7 @@ mod core_host;
 mod deck;
 mod doctor;
 mod folder_sync;
+mod i18n;
 mod icons;
 mod input_share;
 mod launch;

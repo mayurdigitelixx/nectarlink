@@ -2,6 +2,29 @@
 <!DOCTYPE TS>
 <TS version="2.1" language="zh_CN" sourcelanguage="en">
 <context>
+    <name>App</name>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="262"/>
+        <source>Downloading the update…</source>
+        <translation>正在下载更新…</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="263"/>
+        <source>Downloading the update · %1 of %2</source>
+        <translation>正在下载更新 · %1 / %2</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="264"/>
+        <source>My phone&apos;s colors</source>
+        <translation>手机的颜色</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="265"/>
+        <source>My phone&apos;s colors (%1)</source>
+        <translation>手机的颜色（%1）</translation>
+    </message>
+</context>
+<context>
     <name>AppsPage</name>
     <message>
         <location filename="../qml/pages/AppsPage.qml" line="79"/>
@@ -2737,127 +2760,127 @@
         <translation>手机屏幕 · NectarLink</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="321"/>
+        <location filename="../qml/MirrorWindow.qml" line="325"/>
         <source>Copy screenshot (Ctrl+Shift+C)</source>
         <translation>复制截图 (Ctrl+Shift+C)</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="328"/>
+        <location filename="../qml/MirrorWindow.qml" line="332"/>
         <source>Save screenshot (Ctrl+S)</source>
         <translation>保存截图 (Ctrl+S)</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="335"/>
+        <location filename="../qml/MirrorWindow.qml" line="339"/>
         <source>Stop recording (Ctrl+R)</source>
         <translation>停止录制 (Ctrl+R)</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="335"/>
+        <location filename="../qml/MirrorWindow.qml" line="339"/>
         <source>Record video (Ctrl+R)</source>
         <translation>录制视频 (Ctrl+R)</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="354"/>
+        <location filename="../qml/MirrorWindow.qml" line="357"/>
         <source>Phone stays awake while mirroring (turn off)</source>
         <translation>投屏时手机保持唤醒（点击关闭）</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="355"/>
+        <location filename="../qml/MirrorWindow.qml" line="358"/>
         <source>Keep phone awake while mirroring</source>
         <translation>投屏时保持手机唤醒</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="364"/>
+        <location filename="../qml/MirrorWindow.qml" line="367"/>
         <source>Turn phone screen back on</source>
         <translation>重新点亮手机屏幕</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="365"/>
+        <location filename="../qml/MirrorWindow.qml" line="368"/>
         <source>Turn phone screen off while mirroring</source>
         <translation>投屏时关闭手机屏幕</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="373"/>
+        <location filename="../qml/MirrorWindow.qml" line="376"/>
         <source>Play the phone&apos;s sound here</source>
         <translation>在本机播放手机声音</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="373"/>
+        <location filename="../qml/MirrorWindow.qml" line="376"/>
         <source>Mute the phone&apos;s sound here</source>
         <translation>在本机静音手机声音</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="383"/>
+        <location filename="../qml/MirrorWindow.qml" line="386"/>
         <source>Release to send files to %1</source>
         <translation>松开即可发送文件到 %1</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="383"/>
+        <location filename="../qml/MirrorWindow.qml" line="386"/>
         <source>phone</source>
         <translation>手机</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="451"/>
+        <location filename="../qml/MirrorWindow.qml" line="454"/>
         <source>To control the phone, turn on Control from your PC in NectarLink&apos;s settings on the phone.</source>
         <translation>要控制手机，请在手机上的 NectarLink 设置中开启“从电脑控制”。</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="460"/>
+        <location filename="../qml/MirrorWindow.qml" line="463"/>
         <source>Notify phone</source>
         <translation>通知手机</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="471"/>
+        <location filename="../qml/MirrorWindow.qml" line="474"/>
         <source>Hide</source>
         <translation>隐藏</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="509"/>
+        <location filename="../qml/MirrorWindow.qml" line="512"/>
         <source>Opening %1</source>
         <translation>正在打开 %1</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="509"/>
+        <location filename="../qml/MirrorWindow.qml" line="512"/>
         <source>Allow it on your phone</source>
         <translation>请在手机上允许</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="510"/>
+        <location filename="../qml/MirrorWindow.qml" line="513"/>
         <source>%1 closed</source>
         <translation>%1 已关闭</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="510"/>
+        <location filename="../qml/MirrorWindow.qml" line="513"/>
         <source>Mirroring stopped</source>
         <translation>投屏已停止</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="511"/>
+        <location filename="../qml/MirrorWindow.qml" line="514"/>
         <source>Starting…</source>
         <translation>正在启动…</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="520"/>
+        <location filename="../qml/MirrorWindow.qml" line="523"/>
         <source>Tap the notification on %1, then choose to share the entire screen.</source>
         <translation>点击 %1 上的通知，然后选择共享整个屏幕。</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="522"/>
+        <location filename="../qml/MirrorWindow.qml" line="525"/>
         <source>The app closed on %1.</source>
         <translation>%1 上的应用已关闭。</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="523"/>
+        <location filename="../qml/MirrorWindow.qml" line="526"/>
         <source>The phone stopped sharing its screen.</source>
         <translation>手机已停止共享屏幕。</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="530"/>
+        <location filename="../qml/MirrorWindow.qml" line="533"/>
         <source>Open again</source>
         <translation>重新打开</translation>
     </message>
     <message>
-        <location filename="../qml/MirrorWindow.qml" line="530"/>
+        <location filename="../qml/MirrorWindow.qml" line="533"/>
         <source>Try again</source>
         <translation>重试</translation>
     </message>
@@ -5131,6 +5154,89 @@
     </message>
 </context>
 <context>
+    <name>Timeline</name>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="244"/>
+        <source>With</source>
+        <translation>与</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="245"/>
+        <source>Opened from</source>
+        <translation>来自</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="246"/>
+        <source>Opened on</source>
+        <translation>打开于</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="247"/>
+        <source>Saved from</source>
+        <translation>保存自</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="248"/>
+        <source>Recorded on</source>
+        <translation>录制于</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="249"/>
+        <source>From</source>
+        <translation>来自</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="250"/>
+        <source>Sent to</source>
+        <translation>发送至</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="251"/>
+        <source>Photo</source>
+        <translation>照片</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="252"/>
+        <source>Voice recording</source>
+        <translation>录音</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="253"/>
+        <source>File</source>
+        <translation>文件</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="254"/>
+        <source>Copied image</source>
+        <translation>已复制图片</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="255"/>
+        <source>Clip (removed from clipboard history)</source>
+        <translation>片段（已从剪贴板历史中移除）</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="256"/>
+        <source>Session</source>
+        <translation>会话</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="257"/>
+        <source>Phone webcam</source>
+        <translation>手机作为摄像头</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="258"/>
+        <source>Screen mirroring</source>
+        <translation>屏幕镜像</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="259"/>
+        <source>App window</source>
+        <translation>应用窗口</translation>
+    </message>
+</context>
+<context>
     <name>TimelinePage</name>
     <message>
         <location filename="../qml/pages/TimelinePage.qml" line="30"/>
@@ -5415,6 +5521,49 @@
     </message>
 </context>
 <context>
+    <name>Tray</name>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="236"/>
+        <source>Open NectarLink</source>
+        <translation>打开 NectarLink</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="237"/>
+        <source>Command palette</source>
+        <translation>命令面板</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="238"/>
+        <source>Toggle Shelf</source>
+        <translation>切换收纳架</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="239"/>
+        <source>Take photo with phone</source>
+        <translation>用手机拍照</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="240"/>
+        <source>Scan document with phone</source>
+        <translation>用手机扫描文档</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="241"/>
+        <source>Find my phone</source>
+        <translation>查找我的手机</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="242"/>
+        <source>Open copied link on phone</source>
+        <translation>在手机上打开已复制的链接</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="243"/>
+        <source>Quit NectarLink</source>
+        <translation>退出 NectarLink</translation>
+    </message>
+</context>
+<context>
     <name>WalkthroughPage</name>
     <message>
         <location filename="../qml/pages/WalkthroughPage.qml" line="323"/>
@@ -5604,6 +5753,19 @@
         <location filename="../qml/pages/WalkthroughPage.qml" line="1745"/>
         <source>Open features guide</source>
         <translation>打开功能指南</translation>
+    </message>
+</context>
+<context>
+    <name>Webcam</name>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="260"/>
+        <source>Starting camera on %1…</source>
+        <translation>正在启动 %1 的摄像头…</translation>
+    </message>
+    <message>
+        <location filename="../cpp/app_helpers.cpp" line="261"/>
+        <source>Streaming %1 × %2 · %3 fps from %4</source>
+        <translation>正在从 %4 串流 %1 × %2 · %3 fps</translation>
     </message>
 </context>
 <context>

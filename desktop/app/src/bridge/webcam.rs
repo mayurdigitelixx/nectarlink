@@ -116,14 +116,22 @@ impl qobject::Webcam {
             Phase::Idle => ("idle", String::new(), String::new()),
             Phase::Asking { device } => {
                 let name = hub.read(|s| s.name_of(&device)).unwrap_or_else(|| "phone".into());
-                ("asking", device.to_string(), format!("Starting camera on {name}…"))
+                (
+                    "asking",
+                    device.to_string(),
+                    crate::i18n::tr_args("Webcam", "Starting camera on %1…", &[&name]),
+                )
             }
             Phase::Streaming { device, width, height, fps } => {
                 let name = hub.read(|s| s.name_of(&device)).unwrap_or_else(|| "phone".into());
                 (
                     "streaming",
                     device.to_string(),
-                    format!("Streaming {width} × {height} · {fps} fps from {name}"),
+                    crate::i18n::tr_args(
+                        "Webcam",
+                        "Streaming %1 × %2 · %3 fps from %4",
+                        &[&width.to_string(), &height.to_string(), &fps.to_string(), &name],
+                    ),
                 )
             }
             Phase::Ended { reason } => ("ended", String::new(), reason),

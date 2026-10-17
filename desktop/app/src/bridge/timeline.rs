@@ -576,15 +576,18 @@ fn describe_entry(
     entry: &TimelineEntry,
     device_name: &str,
 ) -> (String, String, String, String, u32, bool, bool, bool, bool) {
-    let dir_verb = match (entry.kind, entry.incoming) {
-        (TimelineKind::Link, true) => "Opened from",
-        (TimelineKind::Link, false) => "Opened on",
-        (TimelineKind::Photo, _) => "Saved from",
-        (TimelineKind::Recording, _) => "Recorded on",
-        (TimelineKind::Session, _) => "With",
-        (_, true) => "From",
-        (_, false) => "Sent to",
-    };
+    let dir_verb = crate::i18n::tr(
+        "Timeline",
+        match (entry.kind, entry.incoming) {
+            (TimelineKind::Link, true) => "Opened from",
+            (TimelineKind::Link, false) => "Opened on",
+            (TimelineKind::Photo, _) => "Saved from",
+            (TimelineKind::Recording, _) => "Recorded on",
+            (TimelineKind::Session, _) => "With",
+            (_, true) => "From",
+            (_, false) => "Sent to",
+        },
+    );
     let dev = if device_name.is_empty() { "device" } else { device_name };
     let who = format!("{dir_verb} {dev}");
 
@@ -603,9 +606,9 @@ fn describe_entry(
             let exists = !paths.is_empty();
             let title = if entry.title.is_empty() {
                 match entry.kind {
-                    TimelineKind::Photo => "Photo".into(),
-                    TimelineKind::Recording => "Voice recording".into(),
-                    _ => "File".into(),
+                    TimelineKind::Photo => crate::i18n::tr("Timeline", "Photo"),
+                    TimelineKind::Recording => crate::i18n::tr("Timeline", "Voice recording"),
+                    _ => crate::i18n::tr("Timeline", "File"),
                 }
             } else {
                 entry.title.clone()
@@ -663,9 +666,9 @@ fn describe_entry(
                 raw_detail = detail;
                 friendly
             } else if !clip_thumb.is_empty() || entry.detail == "image" {
-                "Copied image".into()
+                crate::i18n::tr("Timeline", "Copied image")
             } else {
-                "Clip (removed from clipboard history)".into()
+                crate::i18n::tr("Timeline", "Clip (removed from clipboard history)")
             };
             let mut parts = vec![who];
             if entry.size_bytes > 0 {
@@ -691,7 +694,18 @@ fn describe_entry(
             (title, parts.join(" · "), String::new(), String::new(), 1, valid, false, !url.is_empty(), valid)
         }
         TimelineKind::Session => {
-            let title = if entry.title.is_empty() { "Session".into() } else { entry.title.clone() };
+            // The core builds these two titles and is shared with the Android
+            // app, which has no translator, so the desktop side translates the
+            // fixed ones here instead of the core carrying prose.
+            let title = match entry.title.as_str() {
+                "" => crate::i18n::tr("Timeline", "Session"),
+                "Phone webcam" => crate::i18n::tr("Timeline", "Phone webcam"),
+                "Screen mirroring" => crate::i18n::tr("Timeline", "Screen mirroring"),
+                other if other.starts_with("App window #") => {
+                    format!("{}{}", crate::i18n::tr("Timeline", "App window"), &other["App window".len()..])
+                }
+                other => other.to_owned(),
+            };
             let mut parts = vec![who];
             if !entry.detail.is_empty() {
                 parts.push(entry.detail.clone());

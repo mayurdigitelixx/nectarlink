@@ -45,5 +45,11 @@ bool start_external_drag(rust::Str file_path, rust::Str text_fallback);
 // found and installed.
 bool install_system_translator(rust::Str dir);
 
+// Looks up a translation for a string the Rust side builds. Those never pass
+// through a qsTr() in QML, so nothing else can reach them. `context` groups
+// them in the .ts file, and every source text must also appear in the
+// QT_TRANSLATE_NOOP list in app_helpers.cpp or lupdate will drop it.
+rust::String translate(rust::Str context, rust::Str source);
+
 
 

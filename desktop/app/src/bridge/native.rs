@@ -39,5 +39,10 @@ pub mod ffi {
         /// `QGuiApplication` exists and before any QML engine loads. Returns
         /// true when NectarLink's own translation was installed.
         fn install_system_translator(dir: &str) -> bool;
+
+        /// Looks up a translation for a string the Rust side builds, which
+        /// never passes through a `qsTr()` in QML. `context` and the source
+        /// text must match a `QT_TRANSLATE_NOOP` entry in `app_helpers.cpp`.
+        fn translate(context: &str, source: &str) -> String;
     }
 }

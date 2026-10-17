@@ -216,4 +216,55 @@ bool install_system_translator(rust::Str dir)
     return QCoreApplication::installTranslator(app);
 }
 
+rust::String translate(rust::Str context, rust::Str source)
+{
+    const QString ctx = QString::fromUtf8(context.data(), static_cast<qsizetype>(context.size()));
+    const QString src = QString::fromUtf8(source.data(), static_cast<qsizetype>(source.size()));
+    const QByteArray ctxUtf8 = ctx.toUtf8();
+    const QByteArray srcUtf8 = src.toUtf8();
+    const QString translated = QCoreApplication::translate(ctxUtf8.constData(), srcUtf8.constData());
+    const QByteArray out = translated.toUtf8();
+    return rust::String(out.constData(), static_cast<size_t>(out.size()));
+}
+
+namespace {
+// The strings the Rust side looks up through translate(). lupdate reads this
+// list through QT_TRANSLATE_NOOP, which is why the pairs live here and not in
+// Rust: it keeps them extractable, so regenerating the .ts does not throw them
+// away as obsolete. Keep this in step with the call sites.
+[[maybe_unused]] const char *const kRustStrings[] = {
+    QT_TRANSLATE_NOOP("Tray", "Open NectarLink"),
+    QT_TRANSLATE_NOOP("Tray", "Command palette"),
+    QT_TRANSLATE_NOOP("Tray", "Toggle Shelf"),
+    QT_TRANSLATE_NOOP("Tray", "Take photo with phone"),
+    QT_TRANSLATE_NOOP("Tray", "Scan document with phone"),
+    QT_TRANSLATE_NOOP("Tray", "Find my phone"),
+    QT_TRANSLATE_NOOP("Tray", "Open copied link on phone"),
+    QT_TRANSLATE_NOOP("Tray", "Quit NectarLink"),
+    QT_TRANSLATE_NOOP("Timeline", "With"),
+    QT_TRANSLATE_NOOP("Timeline", "Opened from"),
+    QT_TRANSLATE_NOOP("Timeline", "Opened on"),
+    QT_TRANSLATE_NOOP("Timeline", "Saved from"),
+    QT_TRANSLATE_NOOP("Timeline", "Recorded on"),
+    QT_TRANSLATE_NOOP("Timeline", "From"),
+    QT_TRANSLATE_NOOP("Timeline", "Sent to"),
+    QT_TRANSLATE_NOOP("Timeline", "Photo"),
+    QT_TRANSLATE_NOOP("Timeline", "Voice recording"),
+    QT_TRANSLATE_NOOP("Timeline", "File"),
+    QT_TRANSLATE_NOOP("Timeline", "Copied image"),
+    QT_TRANSLATE_NOOP("Timeline", "Clip (removed from clipboard history)"),
+    QT_TRANSLATE_NOOP("Timeline", "Session"),
+    QT_TRANSLATE_NOOP("Timeline", "Phone webcam"),
+    QT_TRANSLATE_NOOP("Timeline", "Screen mirroring"),
+    QT_TRANSLATE_NOOP("Timeline", "App window"),
+    QT_TRANSLATE_NOOP("Webcam", "Starting camera on %1…"),
+    QT_TRANSLATE_NOOP("Webcam", "Streaming %1 × %2 · %3 fps from %4"),
+    QT_TRANSLATE_NOOP("App", "Downloading the update…"),
+    QT_TRANSLATE_NOOP("App", "Downloading the update · %1 of %2"),
+    QT_TRANSLATE_NOOP("App", "My phone's colors"),
+    QT_TRANSLATE_NOOP("App", "My phone's colors (%1)"),
+};
+}
+
+
 
