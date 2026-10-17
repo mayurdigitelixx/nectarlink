@@ -215,7 +215,10 @@ fun SettingsScreen(
                             selected = selected,
                             onClick = { activeCategory = id },
                             label = { Text(stringResource(label)) },
+                            // Solid like the cards: the row sits right on the
+                            // background (Hive's comb showed through).
                             colors = FilterChipDefaults.filterChipColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceContainer,
                                 selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
                                 selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
                             ),
@@ -540,6 +543,8 @@ fun SettingsScreen(
                     ControlAccess(state.inputAccess)
                     SettingRowDivider()
                     ElevatedAccess()
+                    SettingRowDivider()
+                    BankingPauseAccess()
                     SettingRowDivider()
                     DndAccess(state.dndAccess)
                     SettingRowDivider()
@@ -1197,10 +1202,13 @@ private fun ElevatedAccess() {
                             Elevated.State.NotSetUp -> R.string.elevated_not_set_up
                             Elevated.State.Waiting -> R.string.elevated_waiting
                             Elevated.State.Starting -> R.string.elevated_starting
-                            Elevated.State.Running -> R.string.elevated_running
-                            is Elevated.State.Failed ->
-                                if ((state as Elevated.State.Failed).reason == Elevated.Reason.NotPaired) R.string.elevated_not_paired
-                                else R.string.elevated_failed
+                            Elevated.State.Running ->
+                                if (Elevated.rootActive) R.string.elevated_running_root else R.string.elevated_running
+                            is Elevated.State.Failed -> when ((state as Elevated.State.Failed).reason) {
+                                Elevated.Reason.NotPaired -> R.string.elevated_not_paired
+                                Elevated.Reason.RootDenied -> R.string.elevated_root_failed
+                                else -> R.string.elevated_failed
+                            }
                         },
                     ),
                     style = MaterialTheme.typography.bodySmall,
@@ -1235,6 +1243,19 @@ private fun ElevatedAccess() {
                 }) {
                     Text(stringResource(R.string.elevated_open_developer))
                 }
+            }
+        }
+        // Root only when the user picks it, and only on a rooted phone.
+        val rootOffered = Elevated.isRootAvailable() &&
+            (state == Elevated.State.NotSetUp || state is Elevated.State.Failed)
+        if (rootOffered) {
+            Text(
+                stringResource(R.string.elevated_root_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedButton(onClick = { scope.launch { Elevated.setUpWithRoot() } }) {
+                Text(stringResource(R.string.elevated_use_root))
             }
         }
     }

@@ -318,7 +318,12 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     )
     val pcMirrorPackets: SharedFlow<PcMirrorPacket> = _pcMirrorPackets.asSharedFlow()
 
-    /** Starts the node (once). Safe to call repeatedly. */
+    /**
+     * Starts the node (once). Safe to call repeatedly, from any thread: the
+     * app calls it twice as it opens, and two calls at once used to start
+     * two nodes with one identity, which kept taking the PC from each other.
+     */
+    @Synchronized
     fun start() {
         if (startJob != null) return
         startJob = scope.launch(Dispatchers.IO) {

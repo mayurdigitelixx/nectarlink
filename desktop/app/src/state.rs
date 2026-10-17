@@ -270,6 +270,11 @@ pub struct AppState {
     /// Most recently dismissed notification(s) for in-feed undo.
     pub last_dismissed: Vec<NotificationView>,
     pub last_dismissed_label: String,
+    /// Notifications cleared here, by device and key, with the post time they
+    /// had. The phone can't always remove them (missed calls, alarms) or
+    /// isn't reachable yet, and its next list (after a reconnect, or Refresh)
+    /// mustn't bring them back. A newer post under the same key shows again.
+    pub cleared: HashMap<(DeviceId, String), i64>,
     /// Notifications that went away, newest first, while history is kept.
     pub history: Vec<HistoryEntry>,
     pub history_enabled: bool,
@@ -481,6 +486,8 @@ impl AppState {
             }
             NodeEvent::Pairing(event) => self.apply_pairing(event),
             NodeEvent::NotificationsReset { device, items } => {
+                // What the phone no longer shows can't come back as the same post.
+                self.cleared.retain(|(d, key), _| d != device || items.iter().any(|i| i.key == *key));
                 let before = self.notifications.len();
                 // What's gone since the last list went away on the phone.
                 let gone: Vec<NotificationView> = self
@@ -495,11 +502,17 @@ impl AppState {
                 }
                 let mut changes = Changes::NOTIFICATIONS;
                 for n in items {
-                    changes |= self.insert_notification(*device, n.clone());
+                    if !self.is_cleared(*device, n) {
+                        changes |= self.insert_notification(*device, n.clone());
+                    }
                 }
                 changes | self.remember(gone)
             }
             NodeEvent::NotificationPosted { device, notification } => {
+                if self.is_cleared(*device, notification) {
+                    return Changes::NONE;
+                }
+                self.cleared.remove(&(*device, notification.key.clone()));
                 Changes::NOTIFICATIONS | self.upsert_notification(*device, notification.clone())
             }
             NodeEvent::NotificationRemoved { device, key } => {
@@ -757,6 +770,18 @@ impl AppState {
     }
 
     /// Records a user-initiated dismissal so the feed can offer Undo.
+    /// Whether `n` is a post the user cleared here.
+    pub fn is_cleared(&self, device: DeviceId, n: &Notification) -> bool {
+        self.cleared.get(&(device, n.key.clone())).is_some_and(|&when| when == n.when)
+    }
+
+    /// Remembers that the user cleared a notification here (before it's removed).
+    pub fn mark_cleared(&mut self, device: DeviceId, key: &str) {
+        if let Some(n) = self.notifications.iter().find(|n| n.device == device && n.notification.key == key) {
+            self.cleared.insert((device, key.to_owned()), n.notification.when);
+        }
+    }
+
     pub fn record_dismissed(&mut self, views: Vec<NotificationView>, label: String) -> Changes {
         if views.is_empty() {
             return Changes::NONE;
@@ -783,6 +808,7 @@ impl AppState {
             }
             self.notifications
                 .retain(|n| !(n.device == view.device && n.notification.key == view.notification.key));
+            self.cleared.remove(&(view.device, view.notification.key.clone()));
             changes |= self.insert_notification(view.device, view.notification);
         }
         changes
@@ -1497,6 +1523,69 @@ mod tests {
         s.apply(&NodeEvent::PhoneToggles { device: phone, toggles });
         assert!(s.apply(&NodeEvent::DeviceRemoved(phone)).intersects(Changes::TOGGLES));
         assert!(s.toggles.is_empty());
+    }
+
+    #[test]
+    fn cleared_notifications_stay_cleared_until_a_new_post() {
+        let phone = DeviceId([1; 32]);
+        let mut s = AppState::default();
+        let missed_call = note("call", 10);
+        let alarm = note("alarm", 20);
+        s.apply(&NodeEvent::NotificationsReset {
+            device: phone,
+            items: vec![missed_call.clone(), alarm.clone()],
+        });
+
+        // Cleared here; the phone couldn't remove it (or wasn't reachable).
+        s.mark_cleared(phone, "call");
+        s.apply(&NodeEvent::NotificationRemoved { device: phone, key: "call".into() });
+        assert_eq!(keys(&s), ["alarm"]);
+
+        // A reconnect or Refresh sends the phone's list again: it stays gone.
+        s.apply(&NodeEvent::NotificationsReset {
+            device: phone,
+            items: vec![missed_call.clone(), alarm.clone()],
+        });
+        assert_eq!(keys(&s), ["alarm"]);
+        // So does the same post sent again on its own.
+        assert_eq!(
+            s.apply(&NodeEvent::NotificationPosted { device: phone, notification: missed_call.clone() }),
+            Changes::NONE
+        );
+        assert_eq!(keys(&s), ["alarm"]);
+
+        // A newer post under the same key (another missed call) shows.
+        s.apply(&NodeEvent::NotificationPosted { device: phone, notification: note("call", 30) });
+        assert!(keys(&s).contains(&"call"));
+        assert!(s.cleared.is_empty());
+    }
+
+    #[test]
+    fn clears_are_forgotten_once_the_phone_drops_them() {
+        let phone = DeviceId([1; 32]);
+        let mut s = AppState::default();
+        s.apply(&NodeEvent::NotificationsReset { device: phone, items: vec![note("a", 10)] });
+        s.mark_cleared(phone, "a");
+        s.apply(&NodeEvent::NotificationRemoved { device: phone, key: "a".into() });
+        assert_eq!(s.cleared.len(), 1);
+        // Gone from the phone too: nothing left to hold back.
+        s.apply(&NodeEvent::NotificationsReset { device: phone, items: vec![] });
+        assert!(s.cleared.is_empty());
+    }
+
+    #[test]
+    fn undo_brings_a_cleared_notification_back_for_good() {
+        let phone = DeviceId([1; 32]);
+        let mut s = AppState { history_enabled: true, ..AppState::default() };
+        s.apply(&NodeEvent::NotificationsReset { device: phone, items: vec![note("a", 10)] });
+        let views = s.notifications.clone();
+        s.mark_cleared(phone, "a");
+        s.apply(&NodeEvent::NotificationRemoved { device: phone, key: "a".into() });
+        s.record_dismissed(views, "Notification dismissed".into());
+        s.undo_dismiss();
+        assert_eq!(keys(&s), ["a"]);
+        s.apply(&NodeEvent::NotificationsReset { device: phone, items: vec![note("a", 10)] });
+        assert_eq!(keys(&s), ["a"]);
     }
 
     #[test]

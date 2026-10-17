@@ -105,7 +105,7 @@ FocusScope {
     ]
 
     readonly property var stepSubtitles: [
-        "Your Android phone and Windows PC, working together on your local network.",
+        "Your Android phone and your PC, working together on your local network.",
         "No accounts, no cloud servers, and no telemetry.",
         "Get the Android app from GitHub Releases or install the APK over USB.",
         "Scan the QR code from the NectarLink Android app, or pick your phone from nearby devices.",

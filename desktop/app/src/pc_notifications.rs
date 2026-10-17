@@ -22,8 +22,7 @@ pub fn build_pc_notification(
     text: &str,
     when_ms: i64,
 ) -> Option<Notification> {
-    let clean_app =
-        if app_name.trim().is_empty() { "Windows PC".to_owned() } else { app_name.trim().to_owned() };
+    let clean_app = if app_name.trim().is_empty() { "PC".to_owned() } else { app_name.trim().to_owned() };
     Notification {
         key: key.to_owned(),
         app: "pc.windows".to_owned(),

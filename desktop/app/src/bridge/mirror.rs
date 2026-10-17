@@ -235,9 +235,9 @@ impl qobject::Mirror {
                     "sound": window.session == MIRROR_SCREEN && mirror::has_sound(&window.device),
                     "recording": mirror::is_recording(&window),
                     "recordingStartedMs": mirror::recording_started_ms(&window),
-                    "stayAwake": window.session == MIRROR_SCREEN && mirror::stay_awake(&window.device),
-                    "screenOff": window.session == MIRROR_SCREEN && mirror::screen_off(&window.device),
-                    "canScreenOff": window.session == MIRROR_SCREEN && can_screen_off,
+                    "stayAwake": mirror::stay_awake(&window.device),
+                    "screenOff": mirror::screen_off(&window.device),
+                    "canScreenOff": can_screen_off,
                     "notice": mirror::last_notice(&window),
                     "savedX": geom.map(|g| g.x),
                     "savedY": geom.map(|g| g.y),
@@ -384,7 +384,7 @@ impl qobject::Mirror {
     }
 
     pub fn paste(&self, key: &QString) {
-        if let crate::win::clipboard::Clip::Text { text, .. } = crate::win::clipboard::read() {
+        if let crate::win::clipboard::Clip::Text { text, .. } = crate::win::clipboard::read_for_paste() {
             // Long text goes in pieces, each a whole number of characters.
             let mut piece = String::new();
             for c in text.chars() {

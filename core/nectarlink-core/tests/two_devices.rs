@@ -969,6 +969,43 @@ async fn reconnects_after_a_restart() {
     with_timeout("ring after reconnect", pc.node.ring(phone_id, true)).await.expect("ring works again");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn mirror_open_waits_for_a_connection_that_is_coming_back() {
+    let pc_offers = [nectarlink_core::MIRROR_VIEW, nectarlink_core::MIRROR_LISTEN];
+    let mut pc = device_with("Desktop", DeviceKind::Desktop, &pc_offers).await;
+    let mut phone = device_with("Pixel", DeviceKind::Phone, &[nectarlink_core::MIRROR_CAPTURE]).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let pc_id = pc.node.device_id();
+
+    // The PC drops off right after asking for the screen.
+    pc.node.shutdown().await;
+    wait_for(&mut phone, "pc offline", |e| match e {
+        NodeEvent::LinkChanged { device, link: LinkState::Offline { .. } } if *device == pc_id => Some(()),
+        _ => None,
+    })
+    .await;
+
+    // If it stays away, opening gives up after a while instead of hanging.
+    let started = std::time::Instant::now();
+    let gone = with_timeout("open while away", phone.node.mirror_open(pc_id)).await;
+    assert!(matches!(gone, Err(Error::Offline)), "{:?}", gone.err());
+    assert!(started.elapsed() >= Duration::from_secs(5), "waits for the PC first");
+
+    // If it comes back meanwhile, the stream opens on the new connection.
+    let TestDevice { node: old_pc, dir, .. } = pc;
+    drop(old_pc);
+    let (opened, _pc) =
+        tokio::join!(with_timeout("open while reconnecting", phone.node.mirror_open(pc_id)), async {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let pc = start_in(dir, "Desktop", DeviceKind::Desktop).await;
+            let mut caps = vec!["media.control".to_owned()];
+            caps.extend(pc_offers.iter().map(|c| (*c).to_owned()));
+            pc.node.update_power(PowerLevel::NotApplicable, caps).await;
+            pc
+        });
+    assert!(opened.is_ok(), "opens once the PC is back: {:?}", opened.err());
+}
+
 /// Waits for a capability matrix of `peer` whose `feature` is in a state
 /// matching `want`.
 async fn wait_feature(

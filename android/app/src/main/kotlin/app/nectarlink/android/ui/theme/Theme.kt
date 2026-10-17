@@ -464,17 +464,20 @@ fun NectarlinkTheme(
             shapes = currentShapes,
             typography = currentTypography,
         ) {
-            if (combBehind) {
-                androidx.compose.foundation.layout.Box(
-                    androidx.compose.ui.Modifier.fillMaxSize().background(baseScheme.surface),
-                ) {
+            // The content stays in one place for every theme: calling it from
+            // separate branches would rebuild the whole app on a switch to or
+            // from Hive, losing state such as the selected tab.
+            androidx.compose.foundation.layout.Box(
+                androidx.compose.ui.Modifier.fillMaxSize().then(
+                    if (combBehind) androidx.compose.ui.Modifier.background(baseScheme.surface) else androidx.compose.ui.Modifier,
+                ),
+            ) {
+                if (combBehind) {
                     HiveComb(
                         dark = dark,
                         animate = appearance.combMotion && !reducedMotion && !powerSaver,
                     )
-                    content()
                 }
-            } else {
                 content()
             }
         }

@@ -79,6 +79,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalConfiguration
@@ -93,7 +98,9 @@ import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -103,9 +110,9 @@ import app.nectarlink.android.core.Core
 import app.nectarlink.android.core.Device
 import app.nectarlink.android.core.WakeState
 import app.nectarlink.android.ui.theme.LocalReducedMotion
-import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.hypot
+import kotlinx.coroutines.delay
 
 enum class RemoteMode { Touchpad, AirMouse, Presentation, Screen }
 
@@ -422,7 +429,9 @@ private fun TouchpadView(
     modifier: Modifier = Modifier,
 ) {
     var showKeyboard by rememberSaveable { mutableStateOf(false) }
-    var textBuffer by remember { mutableStateOf("") }
+    // What's been typed since the last Enter: a real field, so the keyboard
+    // keeps its page, autocorrects, and has something to delete.
+    var typed by remember { mutableStateOf(TextFieldValue("")) }
     val activeMods = remember { mutableStateListOf<String>() }
     var dragging by remember { mutableStateOf(false) }
     var touchPoint by remember { mutableStateOf<Offset?>(null) }
@@ -681,21 +690,28 @@ private fun TouchpadView(
         if (showKeyboard) {
             val typePlaceholder = stringResource(R.string.remote_type_placeholder, pcName)
             OutlinedTextField(
-                value = textBuffer,
+                value = typed,
                 onValueChange = { next ->
-                    if (next.length > textBuffer.length) {
-                        val added = next.substring(textBuffer.length)
-                        if (activeMods.isNotEmpty() && added.length == 1 && added[0].isLetterOrDigit()) {
-                            core.remoteKey(pcId, added.lowercase(), activeMods.toList(), onStatus)
-                            activeMods.clear()
-                        } else {
-                            core.remoteText(pcId, added, onStatus)
-                        }
-                    } else if (next.length < textBuffer.length) {
-                        core.remoteKey(pcId, "backspace", activeMods.toList(), onStatus)
+                    val diff = typingDiff(typed.text, next.text)
+                    if (activeMods.isNotEmpty() && diff.backspaces == 0 && diff.added.length == 1 &&
+                        diff.added[0].isLetterOrDigit()
+                    ) {
+                        // A shortcut (Ctrl+C...), not text: it stays out of the field.
+                        core.remoteKey(pcId, diff.added.lowercase(), activeMods.toList(), onStatus)
                         activeMods.clear()
+                        return@OutlinedTextField
                     }
-                    textBuffer = " "
+                    repeat(diff.backspaces) { i ->
+                        core.remoteKey(pcId, "backspace", if (i == 0) activeMods.toList() else emptyList(), onStatus)
+                    }
+                    if (diff.added.isNotEmpty()) core.remoteText(pcId, diff.added, onStatus)
+                    if (diff.backspaces > 0 || diff.added.isNotEmpty()) activeMods.clear()
+                    // The PC's cursor is at the end of what was typed: keep this one there too.
+                    typed = if (next.selection == TextRange(next.text.length)) {
+                        next
+                    } else {
+                        next.copy(selection = TextRange(next.text.length))
+                    }
                 },
                 placeholder = { Text(typePlaceholder) },
                 singleLine = true,
@@ -704,11 +720,22 @@ private fun TouchpadView(
                     onSend = {
                         core.remoteKey(pcId, "enter", activeMods.toList(), onStatus)
                         activeMods.clear()
+                        typed = TextFieldValue("")
                     },
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
                     .focusRequester(focusRequester)
+                    // Backspace with nothing typed here still deletes on the PC.
+                    .onPreviewKeyEvent { event ->
+                        if (event.type == KeyEventType.KeyDown && event.key == Key.Backspace && typed.text.isEmpty()) {
+                            core.remoteKey(pcId, "backspace", activeMods.toList(), onStatus)
+                            activeMods.clear()
+                            true
+                        } else {
+                            false
+                        }
+                    }
                     .semantics { contentDescription = typePlaceholder },
             )
         }

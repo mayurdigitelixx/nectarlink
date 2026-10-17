@@ -22,7 +22,9 @@ This guide walks you through installing NectarLink on Windows 11 and Android, co
 ### On Android
 
 1. Download `Nectarlink-<version>-android.apk` from the GitHub Releases page (or scan the QR code shown when Windows setup finishes, or in the PC walkthrough).
-2. Open the downloaded APK and allow installation if Android prompts you. Because NectarLink supports full SMS/MMS messaging, call logs, and optional `All files access` for mounting phone storage in File Explorer (permissions that Google Play restricts), the full app is distributed directly as a signed APK with built-in SHA-256 verified updates.
+2. Open the downloaded APK and allow installation if Android prompts you. Because NectarLink supports full SMS/MMS messaging, call logs, notification actions, accessibility input, and optional `All files access` for mounting phone storage in File Explorer (permissions that Google Play restricts), the full app is distributed directly as a signed APK with built-in SHA-256 verified updates:
+   - If Google Play Protect shows an unrecognized-developer prompt, tap **More details › Install anyway**.
+   - Where Google Play Protect's **Enhanced Fraud Protection** is on (185 markets, including India), it blocks browser-sideloaded APKs that declare `READ_SMS`, `BIND_NOTIFICATION_LISTENER_SERVICE`, or `BIND_ACCESSIBILITY_SERVICE` without showing an **Install anyway** button, either install over USB with `adb install -r Nectarlink-<version>-android.apk` or temporarily pause **Scan apps with Play Protect** in **Google Play Store › Profile icon › Play Protect › Settings (gear)** while installing the APK, then turn it back on.
 3. Open **NectarLink** on your phone.
 
 ### Uninstalling

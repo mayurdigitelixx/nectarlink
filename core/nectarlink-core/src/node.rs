@@ -58,6 +58,9 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(8);
 /// Flow-control windows: how much may be in flight per stream and in all.
 const STREAM_WINDOW: u32 = 16 * 1024 * 1024;
 const CONNECTION_WINDOW: u32 = 32 * 1024 * 1024;
+/// How long opening a stream the PC asked for (its screen, an app window)
+/// waits for the connection to come back if it just dropped or was replaced.
+const STREAM_RECONNECT_WAIT: Duration = Duration::from_secs(10);
 
 /// Capabilities every build offers.
 const BASE_CAPABILITIES: &[&str] = &[
@@ -1084,7 +1087,9 @@ impl Shared {
             self.toggles.remove_peer(&ended.peer);
             self.deck.remove_peer(&ended.peer);
             if paired {
-                tracing::info!(peer = %ended.peer.short(), "disconnected");
+                // Why, as QUIC tells it: timed out, closed by the other side...
+                let reason = ended.conn.close_reason().map(|r| r.to_string()).unwrap_or_default();
+                tracing::info!(peer = %ended.peer.short(), %reason, "disconnected");
                 // Still under the lock: a new session for the peer can't
                 // register (and say it's online) until this is said, so a
                 // stale "offline" never lands after a fresh "online".
@@ -1701,6 +1706,20 @@ impl Node {
             return Err(Error::NotPaired);
         }
         self.shared.session(peer).ok_or(Error::Offline)
+    }
+
+    /// Like [`connected`](Self::connected), but waits up to [`STREAM_RECONNECT_WAIT`]
+    /// for a connection that just dropped or was replaced to come back.
+    async fn connected_soon(&self, peer: &DeviceId) -> Result<Arc<Session>> {
+        let deadline = tokio::time::Instant::now() + STREAM_RECONNECT_WAIT;
+        loop {
+            match self.connected(peer) {
+                Err(Error::Offline) if tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                other => return other,
+            }
+        }
     }
 
     // ---- Capabilities ----
@@ -2417,17 +2436,34 @@ impl Node {
         crate::mirror::apps(&self.shared, &session).await
     }
 
-    /// Opens this phone's video stream to a PC that asked for the screen.
+    /// Opens this phone's video stream to a PC that asked for the screen
+    /// or an app window.
     pub async fn mirror_open(&self, peer: DeviceId) -> Result<crate::MirrorStream> {
-        let session = self.connected(&peer)?;
-        crate::mirror::open(&self.shared, &session, false).await
+        self.open_mirror_stream(peer, false).await
     }
 
     /// Opens this phone's sound stream to a PC that asked for the screen
     /// with its sound.
     pub async fn mirror_open_audio(&self, peer: DeviceId) -> Result<crate::MirrorStream> {
-        let session = self.connected(&peer)?;
-        crate::mirror::open(&self.shared, &session, true).await
+        self.open_mirror_stream(peer, true).await
+    }
+
+    /// The PC asked for the stream a moment ago, but the connection it asked
+    /// over can drop or be replaced (a reconnect, a duplicate connection
+    /// resolved) before the stream opens. Waits for the connection to come
+    /// back, and retries once on a new one.
+    async fn open_mirror_stream(&self, peer: DeviceId, audio: bool) -> Result<crate::MirrorStream> {
+        let first = self.connected_soon(&peer).await?;
+        match crate::mirror::open(&self.shared, &first, audio).await {
+            Err(err @ (Error::Offline | Error::Network(_))) => {
+                let next = self.connected_soon(&peer).await?;
+                if Arc::ptr_eq(&next, &first) {
+                    return Err(err);
+                }
+                crate::mirror::open(&self.shared, &next, audio).await
+            }
+            other => other,
+        }
     }
 
     // ---- Webcam (docs/protocol/webcam.md) ----

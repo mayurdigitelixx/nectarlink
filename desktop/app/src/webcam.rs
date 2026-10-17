@@ -102,6 +102,30 @@ fn normalize_height(h: u32) -> u32 {
     }
 }
 
+/// 720, 1080 or 2160 for a picture of `width` × `height`, either way up (an
+/// upright phone streams 1080 × 1920 for 1080p).
+fn resolution_of(width: u32, height: u32) -> u32 {
+    match width.min(height) {
+        2000.. => 2160,
+        1000.. => 1080,
+        _ => 720,
+    }
+}
+
+/// What the phone is streaming now, chosen here or on the phone (or 1080p
+/// when it can't do 4K): the resolution buttons follow it, and the next
+/// stream starts with it. Doesn't ask the phone again.
+fn follow_stream(width: u32, height: u32) {
+    let h = resolution_of(width, height);
+    let prev = HEIGHT.swap(h, Ordering::Relaxed);
+    #[cfg(not(test))]
+    if prev != h {
+        save_settings(|s| s.webcam_height = h);
+    }
+    #[cfg(test)]
+    let _ = prev;
+}
+
 /// Maps a resolution label (`"720"`, `"1080"`, `"2160"`, `"4k"`, `"4K"`) to
 /// `(width, height)` in pixels.
 pub fn dimensions(res: &str) -> (u16, u16) {
@@ -589,6 +613,7 @@ impl Video {
 
 impl WebcamSink for Sink {
     fn config(&self, config: WebcamConfig) {
+        follow_stream(config.width, config.height);
         state(|s| {
             s.preferred_phone = Some(self.device);
             s.phase = Phase::Streaming {
@@ -636,7 +661,9 @@ fn mirror_bgrx_in_place(bgrx: &mut [u8], width: u32, height: u32) {
 }
 
 fn decode(device: DeviceId, items: &Receiver<Item>, waiting: &AtomicUsize) {
-    let mut decoder = match Decoder::new() {
+    // On the GPU when there is one: 4K takes about 24 ms a frame in software
+    // and 11 ms on a GPU, against 33 ms per frame at 30 fps.
+    let mut decoder = match Decoder::new_gpu("h264") {
         Ok(decoder) => decoder,
         Err(e) => {
             tracing::error!(error = %e, "no H.264 decoder for webcam");
@@ -648,6 +675,7 @@ fn decode(device: DeviceId, items: &Receiver<Item>, waiting: &AtomicUsize) {
             return;
         }
     };
+    tracing::info!(gpu = decoder.on_gpu(), "webcam decoder ready");
     let keyframe_please = || {
         if let Some(node) = core_host::node() {
             core_host::spawn(async move { node.webcam_keyframe(device).await });
@@ -731,6 +759,17 @@ mod tests {
         assert_eq!(dimensions("4k"), (3840, 2160));
         assert_eq!(dimensions("4K"), (3840, 2160));
         assert_eq!(dimensions("unknown"), (1280, 720));
+    }
+
+    #[test]
+    fn the_resolution_comes_from_the_short_side() {
+        assert_eq!(resolution_of(1280, 720), 720);
+        assert_eq!(resolution_of(1920, 1080), 1080);
+        assert_eq!(resolution_of(1080, 1920), 1080);
+        assert_eq!(resolution_of(3840, 2160), 2160);
+        assert_eq!(resolution_of(2160, 3840), 2160);
+        // Encoders round to their block size.
+        assert_eq!(resolution_of(1920, 1088), 1080);
     }
 
     #[test]

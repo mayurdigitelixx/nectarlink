@@ -54,9 +54,22 @@ class CallCompanion : InCallService() {
 
     /** Only a call in progress has controls; ringing and ending report themselves. */
     private fun changed() {
+        number()?.let(PhoneCalls::companionNumber)
         val state = call?.stateNow()
         if (state == Call.STATE_ACTIVE || state == Call.STATE_HOLDING) PhoneCalls.controlsChanged()
     }
+
+    /** The call's number, from its `tel:` handle (null when hidden). */
+    private fun number(): String? =
+        call?.details?.handle?.takeIf { it.scheme == "tel" }?.schemeSpecificPart?.takeIf { it.isNotBlank() }
+
+    /** The name Telecom found for the caller (Android 11+), when it has one. */
+    private fun name(): String? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            call?.details?.contactDisplayName?.takeIf { it.isNotBlank() }
+        } else {
+            null
+        }
 
     private fun controls(): CallControls? {
         val call = call ?: return null
@@ -123,6 +136,12 @@ class CallCompanion : InCallService() {
 
         /** The call in progress' mute, speaker and hold, when bound. */
         fun controls(): CallControls? = instance?.controls()
+
+        /** The call's number as Telecom has it, when bound. */
+        fun number(): String? = instance?.number()
+
+        /** The caller's name as Telecom has it, when bound. */
+        fun name(): String? = instance?.name()
 
         fun answer(): Boolean = instance?.answer() ?: false
 

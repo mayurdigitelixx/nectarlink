@@ -1620,7 +1620,13 @@ async fn receive(shared: Arc<Shared>, peer: DeviceId, mut send: SendStream, mut 
     )
     .await
     {
-        Ok(()) if *pause_rx.borrow() => TransferState::Paused,
+        // Paused just as the last bytes came in: tell the sender, which is
+        // waiting for the confirmation, as any other pause does.
+        Ok(()) if *pause_rx.borrow() => {
+            let _ = recv.stop(VarInt::from_u32(files::PAUSED));
+            let _ = send.reset(VarInt::from_u32(files::PAUSED));
+            TransferState::Paused
+        }
         Ok(()) => match store(&shared, &offer, &part, &dir).await {
             Ok(saved) => {
                 let _ = write_frame(&mut send, &Envelope::empty(files::DONE).to_cbor()).await;

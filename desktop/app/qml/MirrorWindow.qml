@@ -112,6 +112,10 @@ Window {
             ? "Nectarlink.App." + (win.info.device || "").slice(0, 8) + "." + win.info.pkg
             : ""
         focus: true
+        acceptsText: win.phase === "showing" && win.canControl
+        // The emoji panel (Win+.) and input methods give finished text here
+        // instead of as key presses.
+        onTextCommitted: (text) => Mirror.text(win.mirrorKey, text)
 
         // Where on the phone's screen a point in the window is (0 to 1).
         function at(x, y) {
@@ -347,7 +351,6 @@ Window {
             }
             IconButton {
                 id: stayAwakeBtn
-                visible: !win.info.app
                 iconPath: Icons.coffee
                 iconColor: win.info.stayAwake === true ? Theme.primary : "white"
                 label: win.info.stayAwake === true
@@ -357,7 +360,7 @@ Window {
             }
             IconButton {
                 id: screenOffBtn
-                visible: !win.info.app && win.info.canScreenOff === true
+                visible: win.info.canScreenOff === true
                 iconPath: Icons.screenOff
                 iconColor: win.info.screenOff === true ? Theme.primary : "white"
                 label: win.info.screenOff === true

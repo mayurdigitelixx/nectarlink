@@ -6,7 +6,7 @@ For a line-by-line engineering audit of every network, IPC, shared-memory, and f
 
 ## 1. Device Identity Keys
 
-When NectarLink starts for the first time on your Windows PC or Android phone, it generates a persistent 256-bit **Ed25519** cryptographic identity keypair:
+When NectarLink starts for the first time on your PC or Android phone, it generates a persistent 256-bit **Ed25519** cryptographic identity keypair:
 
 - **How devices are identified**: Every device is addressed by its 32-byte Ed25519 public key (`DeviceId`), never by an IP address, hostname, or email address.
 - **How your private key is protected at rest**:

@@ -28,6 +28,9 @@ class VideoView : public QQuickItem
     Q_PROPERTY(QString windowIcon READ windowIcon WRITE setWindowIcon NOTIFY windowIconChanged)
     // Optional Windows AppUserModelID so each app window gets its own taskbar identity.
     Q_PROPERTY(QString windowAppId READ windowAppId WRITE setWindowAppId NOTIFY windowAppIdChanged)
+    // Whether text from input methods (the emoji panel, IMEs for Chinese and
+    // other languages) is taken, and given out through `textCommitted`.
+    Q_PROPERTY(bool acceptsText READ acceptsText WRITE setAcceptsText NOTIFY acceptsTextChanged)
 
 public:
     explicit VideoView(QQuickItem *parent = nullptr);
@@ -41,6 +44,8 @@ public:
     void setWindowIcon(const QString &icon);
     QString windowAppId() const { return m_windowAppId; }
     void setWindowAppId(const QString &appId);
+    bool acceptsText() const { return m_acceptsText; }
+    void setAcceptsText(bool on);
 
     // Where the picture is drawn in the item (letterboxed).
     Q_INVOKABLE QRectF pictureRect() const;
@@ -51,10 +56,15 @@ signals:
     void framesChanged();
     void windowIconChanged();
     void windowAppIdChanged();
+    void acceptsTextChanged();
+    // An input method finished some text (an emoji, a word in Chinese...).
+    void textCommitted(const QString &text);
 
 protected:
     QSGNode *updatePaintNode(QSGNode *old, UpdatePaintNodeData *) override;
     void itemChange(ItemChange change, const ItemChangeData &value) override;
+    void inputMethodEvent(QInputMethodEvent *event) override;
+    QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
 
 private:
     Q_INVOKABLE void frameArrived();
@@ -67,6 +77,7 @@ private:
     quint64 m_shown = 0;
     QString m_windowIcon;
     QString m_windowAppId;
+    bool m_acceptsText = false;
 };
 
 // The latest picture of `stream`: `width` x `height`, 32-bit BGRX rows.

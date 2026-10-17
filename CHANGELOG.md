@@ -4,6 +4,149 @@ All notable changes to NectarLink. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
+## 0.1.4 (2026-10-17)
+
+Steadier connections, Pause for banking apps, Simplified Chinese on Android,
+and the fixes for what people ran into in the first days after launch.
+
+### Downloads
+
+| Download | For | Needs |
+|---|---|---|
+| [Nectarlink-0.1.4-x64-setup.exe](https://github.com/thtbee/nectarlink/releases/download/v0.1.4/Nectarlink-0.1.4-x64-setup.exe) | Windows | Windows 11, 64-bit (Windows 10 works, without Phone as webcam) |
+| [Nectarlink-0.1.4-android.apk](https://github.com/thtbee/nectarlink/releases/download/v0.1.4/Nectarlink-0.1.4-android.apk) | Android | Android 8.0 or newer |
+
+Both are listed with their SHA-256 hashes in [SHA256SUMS.txt](https://github.com/thtbee/nectarlink/releases/download/v0.1.4/SHA256SUMS.txt).
+Installed copies update themselves.
+
+### New
+
+- **Pause for banking apps.** Many banking apps won't open while Developer
+  options, debugging or an accessibility service is on. Choose them in
+  **Settings › Control from your PC**: while one is open, NectarLink turns
+  those off, and turns back on exactly what was on when you leave, even after
+  a crash or a restart. A shortcut can pause first for apps that check as
+  they open.
+- **Simplified Chinese** for the Android app, by
+  [@zzz1465720680](https://github.com/zzz1465720680)
+  ([#13](https://github.com/thtbee/nectarlink/pull/13)). It follows the
+  phone's language.
+- **Turn the phone's screen off from an app window**, as screen mirroring
+  could: the phone stays awake with its screen dark, and the apps keep
+  running on the PC. **Keep phone awake** works there too.
+- **Root as a way to set up Elevated.** On a rooted phone (Magisk, KernelSU
+  or APatch), **Use root** in Elevated setup starts it without pairing
+  Wireless debugging, and it comes back by itself after a restart or away
+  from Wi-Fi. It runs with the same permissions as through Wireless
+  debugging.
+- **Installing past Google Play Protect.** The install guide and
+  troubleshooting explain what to do when Play Protect blocks the APK with
+  no **Install anyway** button, as it now does in India and many other
+  countries, by [@eren-998](https://github.com/eren-998)
+  ([#11](https://github.com/thtbee/nectarlink/pull/11)). The README points
+  there from the downloads.
+
+### Changed
+
+- **Root is only used when you choose it.** On a rooted phone, NectarLink
+  asked for root every time it started and ran its Elevated helper as root.
+  Now nothing asks for root unless you pick **Use root**, and the helper runs
+  as the shell user either way.
+- The apps say "PC" instead of "Windows PC".
+
+### Fixed
+
+- **Far fewer disconnects.** As the phone app opened, two of its startup
+  calls could race and start the phone's connection twice, with one
+  identity. The two took the PC from each other every few seconds: windows
+  and mirroring dropped or couldn't start, and the PC showed the phone
+  connecting over and over. It now starts once.
+- **Windows 10.** NectarLink and its installer start on Windows 10. They
+  failed right away with "Entry Point Not Found" because the Windows 11-only
+  virtual camera was required at startup. On Windows 10, everything works
+  except Phone as webcam, which needs Windows 11.
+- **Phone sound never falls back to the microphone.** On a phone that blocks
+  capturing what it plays, Elevated recorded the microphone instead and sent
+  it to the PC as the phone's sound. It now sends no sound.
+- **Mirroring with Elevated starts without asking on the phone.** Starting it
+  failed on the phone (it opened the helper's stream on the main thread,
+  which Android refuses), so it fell back to asking you to share the screen.
+- **Screen mirroring and app windows use the GPU.** They decode on the PC's
+  GPU when it has one, and in software when it doesn't or if the GPU fails
+  mid-stream, and convert pictures on several cores. Large phone screens and
+  several app windows stay smooth with less CPU.
+- **App windows and mirroring stay up.**
+  - With an app open in a window on the PC, the phone went to sleep after its
+    screen timeout, which stopped the app and froze the window. While a
+    window is open, the phone now stays awake with its screen dimmed, and
+    sleeps as usual once the last window closes.
+  - While it streams, the phone keeps its Wi-Fi and processor awake, so it
+    stays on the network with its screen off.
+  - If the connection to the PC dropped or was replaced just as you opened an
+    app window or the phone's screen, the phone gave up at once with
+    "Offline". It now waits up to 10 seconds for the connection to come back.
+- **Phone as webcam in 4K is smooth.** The PC decoded and converted each 4K
+  frame in about 47 ms, over the 33 ms a frame has at 30 fps, so frames were
+  dropped. It now decodes on the GPU when there is one and converts on several
+  cores, about 19 ms a frame
+  ([#6](https://github.com/thtbee/nectarlink/issues/6)).
+- **Webcam resolution.** The resolution buttons on the PC and the phone
+  follow what's actually streaming, whichever side changed it; held upright,
+  the phone's showed none selected. 4K is offered only when the camera in
+  use can output it, so switching to a front camera without 4K drops to
+  1080p.
+- **Typing and pasting into the phone's screen and app windows.**
+  - The emoji panel (**Win+.**) and input methods for Chinese and other
+    languages work while you control the phone. Only plain key presses got
+    through before.
+  - **Win+V** pastes. Windows marks an item picked from clipboard history as
+    one for clipboard watchers to skip, and NectarLink skipped it even when
+    you asked to paste it.
+  - Pasting is instant instead of typing out a letter at a time, and a pasted
+    line break no longer presses Enter, which sent chat messages early.
+- **Typing on the PC from the phone works like a normal keyboard.** In
+  Control PC, Backspace deletes, the symbols page stays open for more than one
+  symbol, autocorrect and suggestions work, and letters no longer come out
+  jumbled.
+- **No "copied" pop-up on the phone for copies made on the PC.** With
+  Elevated on, text from the PC goes on the phone's clipboard without the
+  copy toast or preview Android and One UI show for every copy. Without
+  Elevated, Android doesn't let an app avoid it.
+- **Calls show who is calling.** An answered call lost the contact name on
+  the PC, and calls made on the phone showed "Unknown caller". The name now
+  stays for the whole call, the number comes from Android's call service when
+  its broadcast has none, and a number not in contacts shows as the number.
+- **Old calls and notifications no longer come back** after the PC sleeps or
+  restarts. A call whose end the phone never recorded rang again on every
+  reconnect; it now counts as over after 90 seconds of ringing. Notifications
+  you clear on the PC stay cleared when the phone resends its list (on
+  reconnect or Refresh), even when the phone can't remove them, as with missed
+  calls and alarms. A new post from the same app shows as usual.
+- Android: the app no longer crashes when you turn off notification access or
+  force stop it, or when Phone as webcam's preview comes back (the same fix
+  covers the QR scanner and Continuity Camera).
+- Android: changing the theme in Settings no longer jumps back to Home
+  ([#8](https://github.com/thtbee/nectarlink/issues/8)).
+- Android: on Hive, the category chips at the top of Settings and the
+  Home/Settings bar are solid, so the honeycomb and the list no longer show
+  through them.
+- Windows: button tooltips, such as **Pause** on the media card, show next to
+  their button again instead of in the window's top-left corner.
+- Pausing a transfer on the receiving device just as its last bytes arrived
+  left the sending device waiting, showing it as still sending. Both now show
+  it paused.
+
+### Thanks
+
+To [@zzz1465720680](https://github.com/zzz1465720680) for the Simplified
+Chinese translation and the reports in
+[#6](https://github.com/thtbee/nectarlink/issues/6) and
+[#8](https://github.com/thtbee/nectarlink/issues/8),
+[@eren-998](https://github.com/eren-998) for the Play Protect guide,
+[@jochenkirstaetter](https://github.com/jochenkirstaetter) for testing on a
+Pixel and the Linux port in progress, and everyone who reported problems on
+GitHub and X.
+
 ## 0.1.3 (2026-10-15)
 
 Hive, a new theme for both apps, and updates to the Windows app that work on

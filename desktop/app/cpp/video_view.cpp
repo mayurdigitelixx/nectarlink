@@ -3,8 +3,11 @@
 
 #include <QtCore/QHash>
 #include <QtCore/QUrl>
+#include <QtGui/QGuiApplication>
 #include <QtGui/QIcon>
 #include <QtGui/QImage>
+#include <QtGui/QInputMethod>
+#include <QtGui/QInputMethodEvent>
 #include <QtGui/QPixmap>
 #include <QtQuick/QQuickWindow>
 #include <QtQuick/QSGSimpleTextureNode>
@@ -104,6 +107,47 @@ void VideoView::setWindowAppId(const QString &appId)
     m_windowAppId = appId;
     emit windowAppIdChanged();
     applyWindowChrome();
+}
+
+void VideoView::setAcceptsText(bool on)
+{
+    if (on == m_acceptsText)
+        return;
+    m_acceptsText = on;
+    setFlag(ItemAcceptsInputMethod, on);
+    if (hasActiveFocus())
+        QGuiApplication::inputMethod()->update(Qt::ImEnabled);
+    emit acceptsTextChanged();
+}
+
+void VideoView::inputMethodEvent(QInputMethodEvent *event)
+{
+    // Text being composed stays in the input method's own window; only
+    // finished text goes to the phone.
+    if (m_acceptsText && !event->commitString().isEmpty())
+        emit textCommitted(event->commitString());
+    event->accept();
+}
+
+QVariant VideoView::inputMethodQuery(Qt::InputMethodQuery query) const
+{
+    switch (query) {
+    case Qt::ImEnabled:
+        return m_acceptsText;
+    case Qt::ImCursorRectangle: {
+        // There is no caret to point at: the emoji panel and candidate
+        // lists open at the middle of the phone's picture.
+        const QPointF middle = pictureRect().center();
+        return QRectF(middle.x(), middle.y(), 1, 1);
+    }
+    case Qt::ImSurroundingText:
+        return QString();
+    case Qt::ImCursorPosition:
+    case Qt::ImAnchorPosition:
+        return 0;
+    default:
+        return QQuickItem::inputMethodQuery(query);
+    }
 }
 
 void VideoView::itemChange(ItemChange change, const ItemChangeData &value)

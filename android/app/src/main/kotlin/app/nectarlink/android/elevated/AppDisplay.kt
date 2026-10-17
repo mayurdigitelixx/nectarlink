@@ -72,6 +72,7 @@ class AppDisplay(
             if (!fullScreen) {
                 launch(pkg, displayId)
                 watchActivities(displayId)
+                keepActive(displayId)
             }
             while (running) {
                 val activeCodec = codec ?: break
@@ -305,6 +306,27 @@ class AppDisplay(
         last?.takeIf { it.startsWith("$pkg/") }
     }.getOrNull()
 
+    /**
+     * Tells Android there is activity on [display] every few seconds while
+     * the window is open. Otherwise the phone sleeps from inactivity, which
+     * stops the app and freezes its window on the PC. The phone's own screen
+     * still dims as usual (scrcpy's `--keep-active` does the same).
+     */
+    private fun keepActive(display: Int) {
+        val signal = UserActivity.forDisplay(display) ?: return
+        Thread({
+            try {
+                while (running && signal()) {
+                    Thread.sleep(KEEP_ACTIVE_MS)
+                }
+            } catch (_: InterruptedException) {
+            }
+        }, "app-display-active").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
     /** Stops the stream when the app on [display] finishes its last activity. */
     private fun watchActivities(display: Int) {
         Thread({
@@ -360,6 +382,9 @@ class AppDisplay(
         const val KIND_CONFIG = 0
         const val KIND_FRAME = 1
         const val KIND_KEYFRAME = 2
+
+        /** How often an open window counts as activity; well under any screen timeout. */
+        private const val KEEP_ACTIVE_MS = 4_000L
 
         /** WindowManager.DISPLAY_IME_POLICY_HIDE. */
         private const val DISPLAY_IME_POLICY_HIDE = 2
@@ -440,4 +465,54 @@ internal class ShellContext private constructor(base: Context) : ContextWrapper(
             }.onFailure { System.err.println("no configuration controller: $it") }
         }
     }
+}
+
+/** `IPowerManager.userActivity`, which the shell may call (DEVICE_POWER). */
+@SuppressLint("PrivateApi", "DiscouragedPrivateApi")
+private object UserActivity {
+    private val power: Any? by lazy {
+        runCatching {
+            val binder = Class.forName("android.os.ServiceManager")
+                .getMethod("getService", String::class.java)
+                .invoke(null, "power") as android.os.IBinder
+            Class.forName("android.os.IPowerManager\$Stub")
+                .getMethod("asInterface", android.os.IBinder::class.java)
+                .invoke(null, binder)
+        }.onFailure { System.err.println("no power manager: $it") }.getOrNull()
+    }
+
+    /**
+     * A call that counts as activity on [display] (false once Android refuses
+     * it), or null if there is none. Before Android 12 activity is for the
+     * whole device.
+     */
+    fun forDisplay(display: Int): (() -> Boolean)? {
+        val manager = power ?: return null
+        val perDisplay = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+        val int = Int::class.javaPrimitiveType
+        val long = Long::class.javaPrimitiveType
+        val method = runCatching {
+            if (perDisplay) {
+                manager.javaClass.getMethod("userActivity", int, long, int, int)
+            } else {
+                manager.javaClass.getMethod("userActivity", long, int, int)
+            }
+        }.onFailure { System.err.println("no userActivity: $it") }.getOrNull() ?: return null
+        return {
+            val now = android.os.SystemClock.uptimeMillis()
+            runCatching {
+                if (perDisplay) {
+                    method.invoke(manager, display, now, EVENT_OTHER, NO_CHANGE_LIGHTS)
+                } else {
+                    method.invoke(manager, now, EVENT_OTHER, NO_CHANGE_LIGHTS)
+                }
+            }.onFailure { System.err.println("user activity: $it") }.isSuccess
+        }
+    }
+
+    /** PowerManager.USER_ACTIVITY_EVENT_OTHER. */
+    private const val EVENT_OTHER = 0
+
+    /** PowerManager.USER_ACTIVITY_FLAG_NO_CHANGE_LIGHTS: the screen may still dim. */
+    private const val NO_CHANGE_LIGHTS = 1
 }

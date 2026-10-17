@@ -87,6 +87,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.nectarlink.android.NectarlinkApplication
 import app.nectarlink.android.R
 import app.nectarlink.android.ui.Preferences
+import app.nectarlink.android.ui.detached
 import app.nectarlink.android.ui.theme.LocalReducedMotion
 import app.nectarlink.android.ui.theme.NectarlinkTheme
 import java.io.ByteArrayOutputStream
@@ -450,7 +451,7 @@ private fun ContinuityCameraScreen(
             val currentCaptured = capturedBitmap
             if (currentCaptured == null) {
                 AndroidView(
-                    factory = { previewView },
+                    factory = { previewView.detached() },
                     modifier = Modifier.fillMaxSize(),
                 )
                 if (mode == "scan") {

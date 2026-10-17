@@ -167,9 +167,10 @@ struct State {
     last_focus_clip: Option<String>,
     /// Phones whose sound is coming in.
     sound: HashSet<DeviceId>,
-    /// Phones kept awake while mirroring their screen.
+    /// Phones kept awake while mirroring (their screen or app windows).
     stay_awake: HashSet<DeviceId>,
-    /// Phones whose physical screen is turned off while mirroring.
+    /// Phones whose physical screen is turned off while mirroring (their
+    /// screen or app windows); cleared when the last window closes.
     screen_off: HashSet<DeviceId>,
     /// Phone currently receiving PC keyboard input without screen mirroring.
     keyboard_device: Option<DeviceId>,
@@ -177,6 +178,15 @@ struct State {
     notices: HashMap<Window, (String, Instant, u64)>,
     apps: HashMap<DeviceId, Apps>,
     saved: SavedWindows,
+}
+
+impl State {
+    /// Whether `device` has a window open or opening (the screen or an app).
+    fn mirroring(&self, device: &DeviceId) -> bool {
+        self.windows
+            .iter()
+            .any(|(w, shown)| w.device == *device && matches!(shown.phase, Phase::Asking | Phase::Showing))
+    }
 }
 
 impl Default for State {
@@ -237,7 +247,7 @@ fn set_sound(device: DeviceId, on: bool) {
     core_host::host().hub.changed(Changes::MIRROR);
 }
 
-/// Whether `device` is set to stay awake while mirroring its screen.
+/// Whether `device` is set to stay awake while mirroring.
 pub fn stay_awake(device: &DeviceId) -> bool {
     state(|s| s.stay_awake.contains(device))
 }
@@ -247,11 +257,8 @@ pub fn screen_off(device: &DeviceId) -> bool {
     state(|s| s.screen_off.contains(device))
 }
 
-/// Toggles keeping the phone awake while mirroring (`session == 0`).
+/// Toggles keeping the phone awake while mirroring (its screen or app windows).
 pub fn set_stay_awake(window: Window, on: bool) {
-    if window.session != MIRROR_SCREEN {
-        return;
-    }
     let screen_off = state(|s| {
         if on {
             s.stay_awake.insert(window.device);
@@ -273,11 +280,9 @@ pub fn set_stay_awake(window: Window, on: bool) {
     });
 }
 
-/// Toggles turning the phone's physical screen off while mirroring (`session == 0`).
+/// Toggles turning the phone's physical screen off while mirroring (its
+/// screen or app windows).
 pub fn set_screen_off(window: Window, on: bool) {
-    if window.session != MIRROR_SCREEN {
-        return;
-    }
     let stay_awake = state(|s| {
         if on {
             s.screen_off.insert(window.device);
@@ -736,6 +741,11 @@ fn record_recent(s: &mut State, device: &DeviceId, pkg: &str) {
     s.saved.save();
 }
 
+/// What `device` is set to while mirroring: `(stay_awake, screen_off)`.
+fn power(s: &State, device: &DeviceId) -> (bool, bool) {
+    (s.stay_awake.contains(device), s.screen_off.contains(device))
+}
+
 /// Asks the phone for its screen.
 pub fn start(device: DeviceId) {
     if keyboard_device() == Some(device) {
@@ -744,9 +754,12 @@ pub fn start(device: DeviceId) {
     let window = Window::screen(device);
     ffi::video_clear(&window.key());
     let (stay_awake, screen_off) = state(|s| {
-        s.screen_off.remove(&device);
+        // The phone's screen starts on, unless app windows already turned it off.
+        if !s.mirroring(&device) {
+            s.screen_off.remove(&device);
+        }
         s.windows.insert(window, Shown { phase: Phase::Asking, app: None, pkg: None });
-        (s.stay_awake.contains(&device), false)
+        power(s, &device)
     });
     request(window, MirrorStart { stay_awake, screen_off, ..OPTIONS });
 }
@@ -815,7 +828,7 @@ pub fn keyboard_paste(device: DeviceId) {
     if keyboard_device() != Some(device) {
         return;
     }
-    if let crate::win::clipboard::Clip::Text { text, .. } = crate::win::clipboard::read() {
+    if let crate::win::clipboard::Clip::Text { text, .. } = crate::win::clipboard::read_for_paste() {
         keyboard_text(device, text);
     }
 }
@@ -839,12 +852,25 @@ pub fn start_app(device: DeviceId, pkg: String, label: String) {
             .map(|(w, _)| *w);
         let window =
             ended.unwrap_or_else(|| Window { device, session: NEXT_SESSION.fetch_add(1, Ordering::Relaxed) });
+        if !s.mirroring(&device) {
+            s.screen_off.remove(&device);
+        }
         s.windows.insert(window, Shown { phase: Phase::Asking, app: Some(label), pkg: Some(pkg.clone()) });
-        Some(window)
+        Some((window, power(s, &device)))
     });
-    let Some(window) = window else { return };
+    let Some((window, (stay_awake, screen_off))) = window else { return };
     ffi::video_clear(&window.key());
-    request(window, MirrorStart { audio: false, session: window.session, app: Some(pkg), ..OPTIONS });
+    request(
+        window,
+        MirrorStart {
+            audio: false,
+            session: window.session,
+            app: Some(pkg),
+            stay_awake,
+            screen_off,
+            ..OPTIONS
+        },
+    );
 }
 
 /// Reopens a mirroring window that ended (the screen or an app window).
@@ -854,15 +880,28 @@ pub fn reopen(window: Window) {
         return;
     }
     let pkg = state(|s| {
+        if !s.mirroring(&window.device) {
+            s.screen_off.remove(&window.device);
+        }
         let shown = s.windows.get_mut(&window)?;
         let pkg = shown.pkg.clone()?;
         shown.phase = Phase::Asking;
         record_recent(s, &window.device, &pkg);
-        Some(pkg)
+        Some((pkg, power(s, &window.device)))
     });
-    let Some(pkg) = pkg else { return };
+    let Some((pkg, (stay_awake, screen_off))) = pkg else { return };
     ffi::video_clear(&window.key());
-    request(window, MirrorStart { audio: false, session: window.session, app: Some(pkg), ..OPTIONS });
+    request(
+        window,
+        MirrorStart {
+            audio: false,
+            session: window.session,
+            app: Some(pkg),
+            stay_awake,
+            screen_off,
+            ..OPTIONS
+        },
+    );
 }
 
 /// Resizes an app window's display on the phone (`width` and `height` are the
@@ -937,7 +976,7 @@ pub fn stop(window: Window) {
     state(|s| {
         s.windows.remove(&window);
         s.notices.remove(&window);
-        if window.session == MIRROR_SCREEN {
+        if !s.mirroring(&window.device) {
             s.screen_off.remove(&window.device);
         }
     });
@@ -969,7 +1008,6 @@ pub fn on_event(event: &NodeEvent) {
             clear_window_buffers(&window);
             if *session == MIRROR_SCREEN {
                 let cleared_kb = state(|s| {
-                    s.screen_off.remove(device);
                     if s.keyboard_device == Some(*device) {
                         s.keyboard_device = None;
                         true
@@ -984,6 +1022,11 @@ pub fn on_event(event: &NodeEvent) {
             if phase(&window).is_some() {
                 set_phase(window, Phase::Ended(None));
             }
+            state(|s| {
+                if !s.mirroring(device) {
+                    s.screen_off.remove(device);
+                }
+            });
         }
         // A phone that went away takes its app list with it.
         NodeEvent::LinkChanged { device, link: nectarlink_core::LinkState::Offline { .. } } => {
@@ -1633,7 +1676,9 @@ impl MirrorSink for Sink {
 /// earlier ones), shows the newest picture of each batch.
 fn decode(window: Window, items: &Receiver<Item>, waiting: &AtomicUsize) {
     let stream = window.key();
-    let mut decoder = match Decoder::new() {
+    // On the GPU when the PC has one (falling back to software on its own),
+    // so big phone screens and several app windows stay smooth.
+    let mut decoder = match Decoder::new_gpu("h264") {
         Ok(decoder) => decoder,
         Err(e) => {
             tracing::error!(error = %e, "no H.264 decoder");
@@ -1641,6 +1686,7 @@ fn decode(window: Window, items: &Receiver<Item>, waiting: &AtomicUsize) {
             return;
         }
     };
+    tracing::info!(gpu = decoder.on_gpu(), codec = decoder.codec(), "mirror decoder ready");
     let keyframe_please = || {
         if let Some(node) = core_host::node() {
             core_host::spawn(async move { node.mirror_keyframe(window.device, window.session).await });
@@ -1654,8 +1700,15 @@ fn decode(window: Window, items: &Receiver<Item>, waiting: &AtomicUsize) {
         match item {
             Item::Config(config) => {
                 if decoder.codec() != config.codec {
-                    match Decoder::new_for_codec(&config.codec) {
-                        Ok(next) => decoder = next,
+                    match Decoder::new_gpu(&config.codec) {
+                        Ok(next) => {
+                            decoder = next;
+                            tracing::info!(
+                                gpu = decoder.on_gpu(),
+                                codec = decoder.codec(),
+                                "mirror decoder ready"
+                            );
+                        }
                         Err(e) => {
                             tracing::error!(error = %e, codec = %config.codec, "no decoder for codec");
                             set_phase(

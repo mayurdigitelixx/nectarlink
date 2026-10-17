@@ -1,6 +1,6 @@
 # Notifications
 
-NectarLink mirrors your phone's notifications to your Windows 11 PC in real time. You can read alerts, reply inline to messages, trigger notification action buttons, track live delivery or timer progress, copy one-time verification codes with one click, and dismiss notifications on both devices at once.
+NectarLink mirrors your phone's notifications to your PC in real time. You can read alerts, reply inline to messages, trigger notification action buttons, track live delivery or timer progress, copy one-time verification codes with one click, and dismiss notifications on both devices at once.
 
 <p align="center">
   <img src="images/notifications-grouped.png" alt="Phone notifications grouped by app on the PC Home screen" width="760">

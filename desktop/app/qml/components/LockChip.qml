@@ -150,7 +150,11 @@ Rectangle {
     Rectangle {
         id: helpTooltip
         property bool shown: false
-        parent: helpTooltip.visible && chip.Window.contentItem ? chip.Window.contentItem : chip
+        // Always in the window's top layer: its position is worked out there
+        // before it shows (attached to the chip until visible, it came out
+        // at the window's top-left corner).
+        parent: chip.Window.contentItem ? chip.Window.contentItem : chip
+        onParentChanged: if (shown) reposition()
         z: 1000
         visible: opacity > 0 && chip.helpText.length > 0
         opacity: shown && chip.visible && chip.enabled ? 1 : 0

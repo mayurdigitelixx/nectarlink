@@ -198,7 +198,7 @@ fn on_clipboard_changed(hwnd: HWND) {
     if unsafe { GetClipboardOwner() }.is_ok_and(|owner| owner == hwnd) {
         return;
     }
-    let clip = read_with(Some(hwnd));
+    let clip = read_with(Some(hwnd), true);
     if let Clip::Text { ref text, html: None, rtf: None } = clip {
         let restore = LAST_WRITTEN_RICH
             .lock()
@@ -231,9 +231,18 @@ fn window() -> Option<HWND> {
     (raw != 0).then_some(HWND(raw as *mut _))
 }
 
-/// What's on the clipboard now.
+/// What's on the clipboard now, for watching it: content marked private
+/// (password managers, or kept out of clipboard history) reads as
+/// [`Clip::Private`].
 pub fn read() -> Clip {
-    read_with(window())
+    read_with(window(), true)
+}
+
+/// What's on the clipboard now, for a paste the user asked for (Ctrl+V,
+/// or an item picked in clipboard history, which Windows marks to keep
+/// monitors away). Pasting it is what any app does; only watchers skip it.
+pub fn read_for_paste() -> Clip {
+    read_with(window(), false)
 }
 
 /// Reads an image from the clipboard as PNG bytes, if an image (`PNG`,
@@ -420,7 +429,7 @@ fn format(name: &str) -> u32 {
     unsafe { RegisterClipboardFormatW(&HSTRING::from(name)) }
 }
 
-fn read_with(owner: Option<HWND>) -> Clip {
+fn read_with(owner: Option<HWND>, skip_private: bool) -> Clip {
     // SAFETY: format availability checks need no open clipboard.
     let has = |format: u32| format != 0 && unsafe { IsClipboardFormatAvailable(format) }.is_ok();
     let png = format("PNG");
@@ -429,11 +438,14 @@ fn read_with(owner: Option<HWND>) -> Clip {
         return Clip::Empty;
     }
     // Password managers and other apps mark private content this way.
-    if has(format("ExcludeClipboardContentFromMonitorProcessing")) || has(format("Clipboard Viewer Ignore")) {
+    if skip_private
+        && (has(format("ExcludeClipboardContentFromMonitorProcessing"))
+            || has(format("Clipboard Viewer Ignore")))
+    {
         return Clip::Private;
     }
     let Some(_open) = Opened::open(owner) else { return Clip::Empty };
-    if let Some(0) = read_dword(format("CanIncludeInClipboardHistory")) {
+    if skip_private && let Some(0) = read_dword(format("CanIncludeInClipboardHistory")) {
         return Clip::Private;
     }
     // Apps that copy both (a table from a spreadsheet) mean the text.

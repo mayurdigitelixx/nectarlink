@@ -159,6 +159,8 @@ object PhoneClipboard {
         if (existingText != null && normalizeClipText(existingText) == normalizeClipText(text) && cleanHtml == null) {
             return@runCatching true
         }
+        // The shell's copy can ask SystemUI not to show it; the app's can't.
+        if (app.nectarlink.android.elevated.Elevated.setClipboard(text, cleanHtml)) return@runCatching true
         val clip = if (cleanHtml != null) {
             ClipData.newHtmlText("Nectarlink", text, cleanHtml)
         } else {

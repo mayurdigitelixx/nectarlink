@@ -36,6 +36,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import app.nectarlink.android.R
+import app.nectarlink.android.ui.detached
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
@@ -119,7 +120,7 @@ private fun CameraPreview(onLink: (String) -> Unit, modifier: Modifier) {
     }
 
     Box(modifier) {
-        AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
+        AndroidView(factory = { previewView.detached() }, modifier = Modifier.fillMaxSize())
     }
 }
 

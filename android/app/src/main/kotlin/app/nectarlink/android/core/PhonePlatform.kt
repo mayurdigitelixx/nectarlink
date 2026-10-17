@@ -146,6 +146,7 @@ internal class PhonePlatform(
 
     override fun mirrorPowerRequested(pcId: String, stayAwake: Boolean, screenOff: Boolean) {
         MirrorService.setPower(pcId, stayAwake, screenOff)
+        appWindows.setPower(pcId, stayAwake, screenOff)
     }
 
     override fun mirrorStopRequested(pcId: String, session: UInt) {

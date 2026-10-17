@@ -71,15 +71,29 @@ internal class CameraEncoder(
     private val context = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
     private val mainExecutor = ContextCompat.getMainExecutor(this.context)
-    private val surfaceExecutor = Executors.newSingleThreadExecutor()
-    private val displayManager = this.context.getSystemService(DisplayManager::class.java)
+    private val surfaceThread = Executors.newSingleThreadExecutor()
 
-    val supports4k: Boolean = supports4kEncoder()
+    /**
+     * Where the encoder's surface work runs. CameraX can still hand it a
+     * task (a surface it's done with) after [stop] shut the thread down, as
+     * it unbinds on the main thread; that one is dropped instead of thrown.
+     */
+    private val surfaceExecutor = java.util.concurrent.Executor { task ->
+        try {
+            surfaceThread.execute(task)
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+        }
+    }
+    private val displayManager = this.context.getSystemService(DisplayManager::class.java)
 
     @Volatile private var running = true
     @Volatile private var keyframeWanted = false
-    @Volatile private var targetHeight: Int = normalizeHeight(initialHeight, supports4k)
     @Volatile private var cameraFacing: String = if (initialCamera == "front") "front" else "back"
+
+    /** Whether the camera in use and the encoder can both do 4K. */
+    @Volatile var supports4k: Boolean = supports4k(this.context, cameraFacing)
+        private set
+    @Volatile private var targetHeight: Int = normalizeHeight(initialHeight, supports4k)
     @Volatile private var activeCodec: ActiveCodec? = null
     @Volatile private var currentSurfaceRotation: Int = readDisplayRotation()
     @Volatile private var currentSensorRotation: Int = 0
@@ -180,7 +194,7 @@ internal class CameraEncoder(
             runCatching { stream.end() }
             main.post { onEnded() }
         }
-        surfaceExecutor.shutdown()
+        surfaceThread.shutdown()
     }
 
     fun requestKeyframe() {
@@ -192,13 +206,17 @@ internal class CameraEncoder(
         main.post {
             if (!running || cameraFacing == normalized) return@post
             cameraFacing = normalized
+            // The other camera may not do 4K (front cameras often don't).
+            supports4k = supports4k(context, normalized)
+            targetHeight = normalizeHeight(targetHeight, supports4k)
             bindCamera()
         }
     }
 
     fun setResolutionHeight(height: Int) {
-        val normalized = normalizeHeight(height, supports4k)
         main.post {
+            // After any camera switch queued before it, which can change what 4K means.
+            val normalized = normalizeHeight(height, supports4k)
             if (!running || targetHeight == normalized) return@post
             targetHeight = normalized
             bindCamera()
@@ -364,6 +382,7 @@ internal class CameraEncoder(
                 maxZoomRatio = maxZ,
                 hasFlash = hasFlash,
                 torchOn = false,
+                supports4k = supports4k,
             )
         }
     }
@@ -609,6 +628,32 @@ internal class CameraEncoder(
 
         /** Checks whether any hardware AVC encoder on this device supports 3840×2160. */
         fun supports4kEncoder(): Boolean = cachedSupports4k
+
+        private val uhdCache = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+        /**
+         * Whether [camera] (`front` or `back`) can stream 4K: a camera facing
+         * that way outputs 3840 × 2160, and the encoder takes it.
+         */
+        fun supports4k(context: Context, camera: String): Boolean =
+            supports4kEncoder() && uhdCache.getOrPut(camera) {
+                runCatching {
+                    val cm = context.getSystemService(CameraManager::class.java) ?: return@runCatching false
+                    val wantedFacing = if (camera == "front") {
+                        CameraCharacteristics.LENS_FACING_FRONT
+                    } else {
+                        CameraCharacteristics.LENS_FACING_BACK
+                    }
+                    cm.cameraIdList.any { id ->
+                        val chars = cm.getCameraCharacteristics(id)
+                        val sizes = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                            ?.getOutputSizes(android.graphics.SurfaceTexture::class.java)
+                            .orEmpty()
+                        chars.get(CameraCharacteristics.LENS_FACING) == wantedFacing &&
+                            sizes.any { it.width >= 3840 && it.height >= 2160 }
+                    }
+                }.getOrDefault(false)
+            }
 
         /**
          * Guarantees each H.264 access unit starts with an Annex B Access

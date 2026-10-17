@@ -3,7 +3,10 @@
 //! is answered and ends; a PC can answer, decline or silence it. The call's
 //! audio stays on the phone.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 use nectarlink_protocol::{
     Envelope, ErrorCode,
@@ -101,19 +104,36 @@ impl CallCommand {
     }
 }
 
+/// How long a call can ring. Phones stop ringing within a minute or so; a
+/// call still "ringing" after this is one whose end was never reported (the
+/// app was stopped, say), and must not ring again on a PC that connects.
+const RINGING_AT_MOST: Duration = Duration::from_secs(90);
+
 /// The phone's call in progress (ringing or active), for PCs that connect
-/// while it's going on.
+/// while it's going on, with when it started ringing.
 #[derive(Debug, Default)]
-pub(crate) struct Current(Mutex<Option<CallState>>);
+pub(crate) struct Current(Mutex<Option<(CallState, Instant)>>);
 
 impl Current {
     fn get(&self) -> Option<CallState> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.get_at(Instant::now())
+    }
+
+    fn get_at(&self, now: Instant) -> Option<CallState> {
+        let current = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let (call, since) = current.as_ref()?;
+        let stale = call.state == calls::RINGING && now.saturating_duration_since(*since) > RINGING_AT_MOST;
+        (!stale).then(|| call.clone())
     }
 
     fn set(&self, call: &CallState) {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner()) =
-            (call.state != calls::ENDED).then(|| call.clone());
+        let mut current = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        // The same call ringing again (an update) keeps when it started.
+        let since = current
+            .as_ref()
+            .filter(|(c, _)| c.id == call.id && c.state == call.state)
+            .map_or_else(Instant::now, |(_, since)| *since);
+        *current = (call.state != calls::ENDED).then(|| (call.clone(), since));
     }
 }
 
@@ -379,5 +399,32 @@ mod tests {
         assert_eq!(current.get().map(|c| c.id), Some("7".into()));
         current.set(&CallState { state: calls::ENDED.into(), ..call });
         assert!(current.get().is_none());
+    }
+
+    #[test]
+    fn a_call_left_ringing_goes_stale() {
+        let current = Current::default();
+        let ringing = CallState {
+            id: "7".into(),
+            state: calls::RINGING.into(),
+            incoming: true,
+            number: None,
+            name: None,
+            photo: None,
+            missed: false,
+            since: None,
+            controls: None,
+        };
+        let start = Instant::now();
+        current.set(&ringing);
+        // Still ringing a minute in, and after an update for the same call.
+        current.set(&ringing);
+        assert!(current.get_at(start + Duration::from_secs(60)).is_some());
+        // Its end never reported: a PC connecting later isn't told it rings.
+        assert!(current.get_at(start + Duration::from_secs(120)).is_none());
+
+        // A call in progress stays, however long it lasts.
+        current.set(&CallState { state: calls::ACTIVE.into(), ..ringing });
+        assert!(current.get_at(start + Duration::from_secs(3600)).is_some());
     }
 }

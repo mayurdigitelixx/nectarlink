@@ -123,6 +123,34 @@ object InputServer {
 
     @Volatile private var clipListenerProxy: Any? = null
 
+    /** The clipboard service and its setPrimaryClip, once the watcher found them. */
+    @Volatile private var clipService: Pair<Any, Method>? = null
+
+    /**
+     * Puts a PC's text on the clipboard as the shell, marked to suppress the
+     * clipboard overlay: SystemUI (Samsung's copy toast too) honours that
+     * only for clips the shell sets, so the copy doesn't pop up on the phone.
+     */
+    private fun setClipboard(rest: String) {
+        val (service, set) = clipService ?: return System.err.println("no clipboard to set")
+        runCatching {
+            val parts = rest.split(' ')
+            val decode = { b64: String -> String(android.util.Base64.decode(b64, android.util.Base64.NO_WRAP), Charsets.UTF_8) }
+            val text = decode(parts[0])
+            val html = parts.getOrNull(1)?.takeIf(String::isNotEmpty)?.let(decode)
+            val clip = if (html != null) {
+                android.content.ClipData.newHtmlText("Nectarlink", text, html)
+            } else {
+                android.content.ClipData.newPlainText("Nectarlink", text)
+            }
+            clip.description.extras = android.os.PersistableBundle().apply {
+                putBoolean("com.android.systemui.SUPPRESS_CLIPBOARD_OVERLAY", true)
+                putBoolean("android.content.extra.IS_REMOTE_DEVICE", true)
+            }
+            set.invoke(service, *buildClipboardArgs(set.parameterTypes, null, clip))
+        }.onFailure { System.err.println("can't set the clipboard: $it") }
+    }
+
     @android.annotation.SuppressLint("PrivateApi", "DiscouragedPrivateApi")
     private fun startClipboardWatcher() {
         runCatching {
@@ -131,6 +159,7 @@ object InputServer {
             val stub = Class.forName("android.content.IClipboard\$Stub")
             val clipboard = stub.getMethod("asInterface", android.os.IBinder::class.java).invoke(null, binder) ?: return
             val getMethod = clipboard.javaClass.methods.firstOrNull { it.name == "getPrimaryClip" } ?: return
+            clipboard.javaClass.methods.firstOrNull { it.name == "setPrimaryClip" }?.let { clipService = clipboard to it }
             val addMethod = clipboard.javaClass.methods.firstOrNull { it.name == "addPrimaryClipChangedListener" } ?: return
             val listenerClass = Class.forName("android.content.IOnPrimaryClipChangedListener")
             val listenerBinder = object : android.os.Binder() {
@@ -345,18 +374,8 @@ object InputServer {
                 if (rec.state == android.media.AudioRecord.STATE_INITIALIZED) return rec
                 rec.release()
             }
-            // 3. Fallback to DEFAULT audio source if REMOTE_SUBMIX is restricted on a custom ROM.
-            runCatching {
-                val rec = android.media.AudioRecord(
-                    android.media.MediaRecorder.AudioSource.DEFAULT,
-                    rate,
-                    channelMask,
-                    encoding,
-                    minBuf,
-                )
-                if (rec.state == android.media.AudioRecord.STATE_INITIALIZED) return rec
-                rec.release()
-            }
+            // Nothing else: any other source is the microphone, and the PC
+            // asked for what the phone plays, not what it hears.
             return null
         }
 
@@ -543,6 +562,7 @@ object InputServer {
                     }
                 }
                 "P" -> if (display < 0) setDisplayPower(rest.trim() != "0")
+                "B" -> if (display < 0) setClipboard(rest)
             }
         }
 
@@ -741,6 +761,8 @@ object InputServer {
             "hotspot off",
             "cmd wifi start-softap",
             "cmd wifi stop-softap",
+            // Pause for banking apps: seeing which app is in front.
+            "appops set app.nectarlink GET_USAGE_STATS allow",
         )
 
         private companion object {

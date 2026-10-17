@@ -64,6 +64,9 @@ class AppWindows(
 
     private val windows = ConcurrentHashMap<Pair<String, UInt>, Window>()
 
+    /** What each PC asks of the phone while its windows are open: (stay awake, screen off). */
+    private val power = ConcurrentHashMap<String, Pair<Boolean, Boolean>>()
+
     init {
         instance = this
     }
@@ -76,6 +79,7 @@ class AppWindows(
         val (width, height, dpi) = size(maxSize)
         val socket = Elevated.openApp(pkg, width, height, dpi, options.bitrate.toInt(), options.fps.toInt()) ?: return false
         val window = Window(pc, options.session, socket, width, height, dpi, maxSize)
+        power[pc] = options.stayAwake to options.screenOff
         windows.put(pc to options.session, window)?.let { runCatching { it.socket.close() } }
         changed()
         scope.launch(Dispatchers.IO) {
@@ -202,7 +206,22 @@ class AppWindows(
         return Triple(fit(shortSide), fit(longSide), dpi)
     }
 
+    /** The PC turned keeping the phone awake, or its screen off, on or off. */
+    fun setPower(pc: String, stayAwake: Boolean, screenOff: Boolean) {
+        if (windows.values.none { it.pc == pc }) return
+        power[pc] = stayAwake to screenOff
+        applyPower()
+    }
+
+    private fun applyPower() {
+        val open = windows.values.map { it.pc }.toSet()
+        power.keys.retainAll(open)
+        val wants = power.values
+        StreamPower.set(context, StreamPower.APPS, open.isNotEmpty(), wants.any { it.first }, wants.any { it.second })
+    }
+
     private fun changed() {
+        applyPower()
         val manager = NotificationManagerCompat.from(context)
         if (windows.isEmpty()) {
             manager.cancel(NOTIFICATION_ID)
