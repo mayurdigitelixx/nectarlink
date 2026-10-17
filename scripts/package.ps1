@@ -5,8 +5,8 @@
 
 .DESCRIPTION
   1. Builds the release app (unless -SkipBuild).
-  2. Stages it with the Qt libraries, plugins and QML modules it uses
-     (windeployqt), the Microsoft C++ runtime, and the license notices.
+  2. Stages it with the Qt libraries, plugins, QML modules and translations it
+     uses (windeployqt), the Microsoft C++ runtime, and the license notices.
   3. Packs the folder into target\package\Nectarlink-<version>-x64-setup.exe
      with NSIS (unless -StageOnly).
 
@@ -91,8 +91,26 @@ Copy-Item $exe $stage
 Copy-Item $vcamDll $stage
 
 Invoke-Native "windeployqt" {
-    & $windeployqt --verbose 0 --release --qmldir (Join-Path $root 'desktop\app\qml') --no-translations `
+    & $windeployqt --verbose 0 --release --qmldir (Join-Path $root 'desktop\app\qml') `
         --no-system-d3d-compiler --no-opengl-sw --no-compiler-runtime --dir $stage (Join-Path $stage 'nectarlink-desktop.exe')
+}
+
+# Translations. windeployqt stages Qt's own .qm files (in translations/, so its
+# file dialogs and standard buttons follow the system language). NectarLink's
+# are compiled from the .ts files the repository keeps; they land beside the
+# executable, which is where the app looks for them.
+$translationSources = @()
+if (Test-Path (Join-Path $root 'desktop\app\i18n')) {
+    $translationSources = @(Get-ChildItem (Join-Path $root 'desktop\app\i18n') -Filter '*.ts')
+}
+if ($translationSources.Count -gt 0) {
+    $lrelease = Join-Path $QtRoot 'bin\lrelease.exe'
+    if (-not (Test-Path $lrelease)) { throw "lrelease not found under $QtRoot; pass -QtRoot" }
+    foreach ($source in $translationSources) {
+        $ts = $source.FullName
+        $qm = Join-Path $stage "$($source.BaseName).qm"
+        Invoke-Native "lrelease $($source.Name)" { & $lrelease $ts -qm $qm }
+    }
 }
 
 # QtQuick.Dialogs brings every Controls style along. The file picker is
