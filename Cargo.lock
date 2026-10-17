@@ -896,7 +896,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 2.0.119",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -2411,7 +2411,7 @@ dependencies = [
 name = "nectarlink-ffi"
 version = "0.1.4"
 dependencies = [
- "jni-sys 0.3.1",
+ "jni-sys 0.4.1",
  "nectarlink-core",
  "paranoid-android",
  "thiserror 2.0.21",

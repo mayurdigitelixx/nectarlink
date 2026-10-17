@@ -30,7 +30,7 @@ tracing-subscriber.workspace = true
 uniffi.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
-jni-sys = "0.3"
+jni-sys = "0.4"
 paranoid-android = "0.2"
 
 [lints]
