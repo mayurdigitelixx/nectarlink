@@ -17,6 +17,7 @@ import android.util.Log
 import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.core.content.edit
+import app.nectarlink.android.banking.BankingPause
 import app.nectarlink.android.calls.CallCompanion
 import app.nectarlink.android.notifications.NotificationListener
 import app.nectarlink.core.MirrorInputEvent
@@ -67,11 +68,15 @@ object Elevated {
         data class Failed(val reason: Reason) : State
     }
 
-    enum class Reason { WrongCode, NoPairingDialog, NotPaired, Other }
+    enum class Reason { WrongCode, NoPairingDialog, NotPaired, RootDenied, Other }
 
     private const val TAG = "Elevated"
     private const val PREFS = "elevated"
     private const val PAIRED = "paired"
+    /** Set up through root (the user chose Use root) rather than Wireless debugging. */
+    private const val ROOT = "root"
+    /** The shell user, which the helper runs as however it's started. */
+    private const val SHELL_UID = "2000"
 
     private val _state = MutableStateFlow<State>(State.NotSetUp)
     val state: StateFlow<State> = _state.asStateFlow()
@@ -88,7 +93,7 @@ object Elevated {
     @Volatile private var helper: Pair<Int, String>? = null
     @Volatile private var screenOffRequested = false
 
-    /** True when the active Elevated helper was launched directly via Root (`su`). */
+    /** True when the running helper was started through root (`su`), not Wireless debugging. */
     @Volatile var rootActive: Boolean = false
         private set
 
@@ -106,14 +111,45 @@ object Elevated {
         paths.any { runCatching { java.io.File(it).exists() }.getOrDefault(false) }
     }
 
-    /** Checks whether a `su` binary (Magisk, KernelSU, APatch) is present on the device. */
+    /**
+     * Whether a `su` binary (Magisk, KernelSU, APatch) is on the phone, so
+     * Elevated may offer root as a way to start. Only looks for the file:
+     * nothing asks for root until the user picks it.
+     */
     fun isRootAvailable(): Boolean = rootAvailableCached
+
+    /** Whether the user set Elevated up through root. */
+    private fun usesRoot() = isRootAvailable() && prefs().getBoolean(ROOT, false)
+
+    private fun prefs() = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    /**
+     * Sets Elevated up through root, as the user asked (instead of pairing
+     * Wireless debugging). The root manager asks once; after that Elevated
+     * starts by itself, also after a restart and away from Wi-Fi. The helper
+     * still runs as the shell user, with the same permissions either way.
+     */
+    suspend fun setUpWithRoot(): Boolean = withContext(Dispatchers.IO) {
+        if (!isRootAvailable()) return@withContext false
+        val started = lock.withLock {
+            if (running) return@withLock true
+            _state.value = State.Starting
+            tryStartWithRootLocked()
+        }
+        prefs().edit { putBoolean(ROOT, started) }
+        if (started) {
+            cancelRetry()
+        } else {
+            _state.value = State.Failed(Reason.RootDenied)
+        }
+        started
+    }
 
     fun init(context: Context) {
         this.context = context.applicationContext
         watchWirelessDebugging()
         scope.launch(Dispatchers.IO) {
-            if (paired() || isRootAvailable()) {
+            if (paired() || usesRoot()) {
                 _state.value = State.Waiting
                 start()
             }
@@ -149,9 +185,10 @@ object Elevated {
         }.onFailure { Log.i(TAG, "can't watch wireless debugging", it) }
     }
 
-    /** Tries again later, while it can still work: paired, not running, on Wi-Fi. */
+    /** Tries again later, while it can still work: set up, not running, on Wi-Fi (or through root). */
     private fun scheduleRetry() {
-        if (!paired() || running || !onWifi()) return
+        if (!(paired() || usesRoot()) || running || BankingPause.isPaused(context)) return
+        if (!usesRoot() && !onWifi()) return
         val wait = RETRY_MS[retryAttempt.coerceAtMost(RETRY_MS.lastIndex)]
         retryAttempt++
         retryJob?.cancel()
@@ -240,13 +277,19 @@ object Elevated {
 
     // ---- Starting ----
 
-    /** Connects and starts the input helper (when set up or rooted; again after it stopped). */
+    /** Connects and starts the input helper (when set up; again after it stopped). */
     suspend fun start(): Boolean = withContext(Dispatchers.IO) {
-        if (!paired() && !isRootAvailable()) return@withContext false
+        if (!paired() && !usesRoot()) return@withContext false
+        // Paused for a banking app: debugging stays off until it's over
+        // (BankingPause starts Elevated again then).
+        if (BankingPause.isPaused(context)) {
+            if (!running) _state.value = State.Waiting
+            return@withContext false
+        }
         val started = lock.withLock {
             if (running) return@withLock true
             _state.value = State.Starting
-            if (tryStartWithRootLocked()) {
+            if (usesRoot() && tryStartWithRootLocked()) {
                 return@withLock true
             }
             if (!paired()) {
@@ -289,29 +332,24 @@ object Elevated {
     }
 
     /**
-     * Attempts to launch [InputServer] directly via `su` (Magisk / KernelSU / APatch)
-     * without requiring Wireless Debugging.
+     * Starts [InputServer] through `su` (Magisk, KernelSU, APatch), without
+     * Wireless debugging. It runs as the shell user, as through Wireless
+     * debugging: root only starts it. A root manager that can't switch to
+     * that user fails here rather than run the helper as root.
      */
     private fun tryStartWithRootLocked(): Boolean {
         if (!isRootAvailable()) return false
-        val idOk = runCatching {
-            val check = ProcessBuilder("su", "-c", "id").redirectErrorStream(true).start()
-            val finished = check.waitFor(4, java.util.concurrent.TimeUnit.SECONDS)
-            if (!finished) {
-                check.destroyForcibly()
-                false
-            } else {
-                val out = check.inputStream.bufferedReader().readText()
-                check.exitValue() == 0 && out.contains("uid=0")
-            }
-        }.getOrDefault(false)
-        if (!idOk) return false
-
+        val uid = asShell("id -u")?.trim()
+        if (uid != SHELL_UID) {
+            Log.i(TAG, "root can't start the helper as the shell user (got ${uid ?: "nothing"})")
+            return false
+        }
+        grants().forEach { asShell(it) }
         return runCatching {
             val token = ByteArray(24).also(SecureRandom()::nextBytes).joinToString("") { "%02x".format(it) }
             val apk = context.applicationInfo.sourceDir
             val cmd = "CLASSPATH=$apk app_process /system/bin ${InputServer::class.java.name} $token"
-            val proc = ProcessBuilder("su", "-c", cmd).start()
+            val proc = ProcessBuilder("su", SHELL_UID, "-c", cmd).start()
             rootProcess = proc
             val output = proc.inputStream.bufferedReader()
             val first = output.readLine().orEmpty()
@@ -320,25 +358,34 @@ object Elevated {
                 "root helper said ${first.ifEmpty { "nothing" }}"
             }
             rootActive = true
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit { putBoolean(PAIRED, true) }
             connectSocketLocked(port, token)
             Thread {
                 runCatching { output.lineSequence().forEach { line -> Log.d(TAG, "root-helper: $line") } }
                 input = null
                 rootActive = false
                 runCatching { socket?.close() }
-                if (_state.value == State.Running) _state.value = if (paired()) State.Waiting else State.NotSetUp
+                if (_state.value == State.Running) _state.value = State.Waiting
                 onChange()
                 scheduleRetry()
             }.start()
             true
         }.onFailure {
-            Log.i(TAG, "root helper start failed, falling back to wireless debugging", it)
+            Log.i(TAG, "the helper didn't start through root", it)
             runCatching { rootProcess?.destroyForcibly() }
             rootProcess = null
             rootActive = false
         }.getOrDefault(false)
     }
+
+    /** Runs [command] as the shell user through `su`; its output, or null if it didn't run. */
+    private fun asShell(command: String): String? = runCatching {
+        val process = ProcessBuilder("su", SHELL_UID, "-c", command).redirectErrorStream(true).start()
+        if (!process.waitFor(SU_WAIT_S, java.util.concurrent.TimeUnit.SECONDS)) {
+            process.destroyForcibly()
+            return null
+        }
+        process.inputStream.bufferedReader().readText().takeIf { process.exitValue() == 0 }
+    }.getOrNull()
 
     /** Wireless debugging back on, when NectarLink may (granted at the first start). */
     private fun turnOnWirelessDebugging() {
@@ -351,34 +398,44 @@ object Elevated {
         }.onFailure { Log.i(TAG, "can't turn on wireless debugging", it) }
     }
 
-    private fun launch(adb: Connection) {
+    /** What the shell grants NectarLink once, before the helper starts (however it starts). */
+    private fun grants(): List<String> = buildList {
+        val pkg = context.packageName
         // Turning wireless debugging back on later is NectarLink's to do.
         if (context.checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS) != PackageManager.PERMISSION_GRANTED) {
-            run(adb, "pm grant ${context.packageName} ${Manifest.permission.WRITE_SECURE_SETTINGS}")
+            add("pm grant $pkg ${Manifest.permission.WRITE_SECURE_SETTINGS}")
         }
         // Lets Telecom bind the calling companion: mute, speaker, hold and
         // the keypad from a PC.
         if (!CallCompanion.allowed(context) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            run(adb, "appops set ${context.packageName} ${CallCompanion.OP_NAME} allow")
+            add("appops set $pkg ${CallCompanion.OP_NAME} allow")
         }
         // Lets the notification listener read one-time codes in notifications
         // Android 15+ marks sensitive, and refreshes the listener registration
         // so NotificationManagerService updates its trusted-listener UID set.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
             if (!NotificationListener.canReadSensitive(context)) {
-                run(adb, "appops set ${context.packageName} ${NotificationListener.OP_SENSITIVE_NAME} allow")
+                add("appops set $pkg ${NotificationListener.OP_SENSITIVE_NAME} allow")
             }
             if (NotificationListener.hasAccess(context)) {
-                run(adb, "cmd notification allow_listener ${context.packageName}/${NotificationListener::class.java.name}")
+                add("cmd notification allow_listener $pkg/${NotificationListener::class.java.name}")
             }
         }
         // Lets PCs toggle Do Not Disturb / silent mode and screen brightness without extra prompts.
         if (context.getSystemService(android.app.NotificationManager::class.java)?.isNotificationPolicyAccessGranted == false) {
-            run(adb, "cmd notification allow_dnd ${context.packageName}")
+            add("cmd notification allow_dnd $pkg")
         }
         if (!Settings.System.canWrite(context)) {
-            run(adb, "appops set ${context.packageName} WRITE_SETTINGS allow")
+            add("appops set $pkg WRITE_SETTINGS allow")
         }
+        // Pause for banking apps sees which app is in front; only for those using it.
+        if (BankingPause.apps(context).isNotEmpty() && !BankingPause.hasUsageAccess(context)) {
+            add("appops set $pkg GET_USAGE_STATS allow")
+        }
+    }
+
+    private fun launch(adb: Connection) {
+        grants().forEach { run(adb, it) }
         val token = ByteArray(24).also(SecureRandom()::nextBytes).joinToString("") { "%02x".format(it) }
         val apk = context.applicationInfo.sourceDir
         val command = "CLASSPATH=$apk app_process /system/bin ${InputServer::class.java.name} $token"
@@ -508,7 +565,7 @@ object Elevated {
         socket = null
         shell = null
         rootProcess = null
-        _state.value = if (paired()) State.Waiting else State.NotSetUp
+        _state.value = if (paired() || usesRoot()) State.Waiting else State.NotSetUp
         onChange()
     }
 
@@ -517,7 +574,10 @@ object Elevated {
         cancelRetry()
         screenOffRequested = false
         stop()
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit { putBoolean(PAIRED, false) }
+        prefs().edit {
+            putBoolean(PAIRED, false)
+            putBoolean(ROOT, false)
+        }
         runCatching { adb?.close() }
         adb = null
         AdbKey.delete(context.noBackupFilesDir.resolve("adb"))
@@ -558,16 +618,17 @@ object Elevated {
             is MirrorInputEvent.Scroll -> "S ${event.x * w} ${event.y * h} ${event.dx} ${event.dy}"
             is MirrorInputEvent.Key -> keys[event.key]?.let { "K $it" }
                 ?: if (event.key == "notifications" && display == null) "C cmd statusbar expand-notifications" else return true
-            // One line per piece: no line breaks inside. Non-ASCII pieces are pasted via the clipboard.
-            is MirrorInputEvent.Text -> return event.text.split(LINE_BREAK).withIndex().all { (i, piece) ->
-                (i == 0 || send(writer, "${to}K ${KeyEvent.KEYCODE_ENTER}")) && when {
-                    piece.isEmpty() -> true
-                    piece.any { it.code > 127 } -> {
-                        app.nectarlink.android.clipboard.PhoneClipboard.write(context, piece)
-                        send(writer, "${to}K ${KeyEvent.KEYCODE_PASTE}")
-                    }
-                    else -> send(writer, "${to}T $piece")
-                }
+            // A key typed on the PC types; anything longer (a paste, a word from
+            // an input method, an emoji) goes on the clipboard, quietly, and is
+            // pasted at once: typing it out took a moment per letter, and a line
+            // break typed as Enter sends a chat message early.
+            is MirrorInputEvent.Text -> return when {
+                event.text.isEmpty() -> true
+                event.text == "\n" || event.text == "\r" || event.text == "\r\n" ->
+                    send(writer, "${to}K ${KeyEvent.KEYCODE_ENTER}")
+                event.text.length == 1 && event.text[0].code in 32..126 -> send(writer, "${to}T ${event.text}")
+                // The clipboard is the phone's own, whichever display the text is for.
+                else -> setClipboard(event.text, null) && send(writer, "${to}K ${KeyEvent.KEYCODE_PASTE}")
             }
             is MirrorInputEvent.Gamepad ->
                 "G ${event.buttons} ${event.lx} ${event.ly} ${event.rx} ${event.ry} ${event.lt} ${event.rt}"
@@ -597,10 +658,24 @@ object Elevated {
         }.onFailure { Log.w(TAG, "can't open Elevated audio stream", it) }.getOrNull()
     }
 
+    /** Lets NectarLink see which app is in front (for Pause for banking apps); false if Elevated isn't running. */
+    fun grantUsageAccess(): Boolean = runCommand("appops set ${context.packageName} GET_USAGE_STATS allow")
+
     /** Runs an allowed shell command through the Elevated helper. */
     fun runCommand(command: String): Boolean {
         val writer = input ?: return false
         return send(writer, "C $command")
+    }
+
+    /**
+     * Puts a PC's text on the clipboard through the helper, so the phone
+     * doesn't pop up "copied" for a copy made on the PC. False when the
+     * helper isn't running (the app writes it then).
+     */
+    fun setClipboard(text: String, html: String?): Boolean {
+        val writer = input ?: return false
+        val b64 = { value: String -> android.util.Base64.encodeToString(value.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP) }
+        return send(writer, "B ${b64(text)} ${html?.let(b64).orEmpty()}")
     }
 
     /** Turns the physical screen panel off or back on while mirroring. */
@@ -660,7 +735,24 @@ object Elevated {
         }.onFailure { Log.w(TAG, "can't open Elevated screen mirror", it) }.getOrNull()
     }
 
-    private fun send(writer: Writer, line: String): Boolean = try {
+    /**
+     * Writes [line] to the helper. Android doesn't allow socket writes on
+     * the main thread (they throw, which read as the helper having gone);
+     * a line sent from there goes out on [offMain], in order.
+     */
+    private fun send(writer: Writer, line: String): Boolean {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            offMain.execute { sendNow(writer, line) }
+            return true
+        }
+        return sendNow(writer, line)
+    }
+
+    private val offMain = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "elevated-send").apply { isDaemon = true }
+    }
+
+    private fun sendNow(writer: Writer, line: String): Boolean = try {
         require('\r' !in line && '\n' !in line)
         synchronized(writer) {
             writer.write(line + "\n")
@@ -673,7 +765,6 @@ object Elevated {
         false
     }
 
-    private val LINE_BREAK = Regex("\r\n|\r|\n")
     private val PACKAGE = Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")
 
     private val keys = mapOf(
@@ -706,6 +797,8 @@ object Elevated {
     private const val ADB_WIFI = "adb_wifi_enabled"
     private const val DISCOVERY_MS = 10_000L
     private const val CONNECT_MS = 10_000L
+    /** How long a `su` command may take; the first one waits for the root manager's prompt. */
+    private const val SU_WAIT_S = 30L
     /** Waits between attempts to start again; the last one repeats. */
     private val RETRY_MS = longArrayOf(2_000L, 5_000L, 10_000L, 20_000L, 40_000L, 60_000L)
 }

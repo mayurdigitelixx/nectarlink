@@ -92,6 +92,10 @@
     <string name="elevated_failed">Couldn\'t start it. Check that Wireless debugging is on, then try again.</string>
     <string name="elevated_not_paired">The phone forgot NectarLink\'s pairing. Set it up again.</string>
     <string name="elevated_set_up">Set up</string>
+    <string name="elevated_use_root">Use root</string>
+    <string name="elevated_root_hint">This phone is rooted, so Elevated can start through root instead: no pairing, and it comes back by itself after a restart or away from Wi-Fi. It gets the same permissions as with Wireless debugging.</string>
+    <string name="elevated_running_root">On, through root: your PC\'s mouse and keyboard work like a real touchscreen and keyboard.</string>
+    <string name="elevated_root_failed">Root wasn\'t allowed, or your root manager can\'t start NectarLink\'s helper as the shell user. You can set it up with Wireless debugging instead.</string>
     <string name="elevated_turn_off">Turn off</string>
     <string name="elevated_try_again">Try again</string>
     <string name="elevated_steps_title">Set up Wireless debugging</string>
@@ -709,7 +713,7 @@
     <string name="walkthrough_action_open_guide">Open features guide</string>
 
     <string name="walkthrough_welcome_title">Link your phone and PC</string>
-    <string name="walkthrough_welcome_subtitle">Notifications, calls, messages, files, clipboard, camera and screen, shared with your Windows 11 PC.</string>
+    <string name="walkthrough_welcome_subtitle">Notifications, calls, messages, files, clipboard, camera and screen, shared with your PC.</string>
     <string name="walkthrough_welcome_card_heading">Private by design</string>
     <string name="walkthrough_welcome_tls_title">End-to-end encrypted (TLS 1.3)</string>
     <string name="walkthrough_welcome_tls_body">Every connection uses mutually verified device certificates.</string>
@@ -767,7 +771,7 @@
     <string name="walkthrough_perm_access_requires">Android requires the NectarLink Accessibility service or Elevated.</string>
 
     <string name="walkthrough_pair_title">Pair with your PC</string>
-    <string name="walkthrough_pair_subtitle">Open NectarLink on your Windows 11 PC. Scan its QR code or pick your PC below.</string>
+    <string name="walkthrough_pair_subtitle">Open NectarLink on your PC. Scan its QR code or pick your PC below.</string>
     <string name="walkthrough_pair_ready_title">Paired PC</string>
     <string name="walkthrough_pair_badge_paired">Paired</string>
     <string name="walkthrough_pair_device_online">%1$s · Connected</string>
@@ -780,7 +784,7 @@
     <string name="walkthrough_pair_usb_hint">Connect a USB cable with USB debugging enabled to pair automatically.</string>
 
     <string name="walkthrough_power_title">Choose your power level</string>
-    <string name="walkthrough_power_subtitle">Pick how much control your Windows 11 PC has over this phone.</string>
+    <string name="walkthrough_power_subtitle">Pick how much control your PC has over this phone.</string>
     <string name="walkthrough_power_current_badge">Current: %1$s</string>
     <string name="walkthrough_power_badge_active">Active</string>
     <string name="walkthrough_power_badge_available">Available</string>
@@ -882,7 +886,7 @@
     <string name="guide_notif_needs">Notification access, Notifications toggle on for the PC</string>
     <string name="guide_notif_need_1">Android Notification Access enabled for NectarLink.</string>
     <string name="guide_notif_need_2">On Android 13+, Allow restricted settings enabled in App info if sideloaded.</string>
-    <string name="guide_notif_need_3">Windows 11 PC paired and online.</string>
+    <string name="guide_notif_need_3">PC paired and online.</string>
     <string name="guide_notif_phone_1">Open Settings › Permissions › Notifications and tap Allow.</string>
     <string name="guide_notif_phone_2">Turn on NectarLink in Android Notification Access.</string>
     <string name="guide_notif_pc_1">View phone notifications in the PC notification center or NectarLink window.</string>
@@ -914,7 +918,7 @@
     <string name="guide_media_where">Home › Paired PC card › PC audio</string>
     <string name="guide_media_needs">Notification access for phone media, online paired PC for PC audio</string>
     <string name="guide_media_need_1">Notification Access on Android to read active media sessions.</string>
-    <string name="guide_media_need_2">Online paired Windows 11 PC.</string>
+    <string name="guide_media_need_2">Online paired PC.</string>
     <string name="guide_media_phone_1">On Home, expand PC audio on your paired PC card.</string>
     <string name="guide_media_phone_2">Adjust the PC volume slider or turn on Use phone as speaker.</string>
     <string name="guide_media_pc_1">Control phone playback with Play, Pause, Next, and Previous on your PC.</string>
@@ -973,7 +977,7 @@
     <string name="guide_files_summary">Transfer files or folders between phone and PC over Wi-Fi, Ethernet, or USB with pause and resume.</string>
     <string name="guide_files_where">Home › Paired PC card › Send files / Send a folder</string>
     <string name="guide_files_needs">Paired PC</string>
-    <string name="guide_files_need_1">Paired Windows 11 PC (offline files wait in Send queue for up to 7 days).</string>
+    <string name="guide_files_need_1">Paired PC (offline files wait in Send queue for up to 7 days).</string>
     <string name="guide_files_phone_1">On Home, tap Send files or Send a folder on your paired PC card.</string>
     <string name="guide_files_phone_2">Pause, resume, or cancel active transfers in the Transfers card on Home.</string>
     <string name="guide_files_pc_1">Drag files onto the NectarLink window or top-edge island on your PC.</string>
@@ -1076,7 +1080,7 @@
     <string name="guide_mirror_summary">Stream your phone screen and internal audio to a window on your PC, or view your PC screen on your phone.</string>
     <string name="guide_mirror_where">Settings › Permissions › Control from your PC (or Home › Control PC)</string>
     <string name="guide_mirror_needs">Online paired PC; Assist or Elevated for mouse and keyboard control</string>
-    <string name="guide_mirror_need_1">Online paired Windows 11 PC.</string>
+    <string name="guide_mirror_need_1">Online paired PC.</string>
     <string name="guide_mirror_need_2">Optional: Assist (Accessibility) or Elevated for PC mouse and keyboard input.</string>
     <string name="guide_mirror_phone_1">Tap Start now on Android\'s capture prompt when mirroring starts from your PC.</string>
     <string name="guide_mirror_phone_2">Tap Stop on the Home banner anytime to end screen sharing.</string>
@@ -1091,7 +1095,7 @@
     <string name="guide_apps_where">Settings › Permissions › Control from your PC › Real touch and keys (Wireless debugging)</string>
     <string name="guide_apps_needs">Elevated (Wireless debugging)</string>
     <string name="guide_apps_need_1">Elevated, set up through Wireless debugging.</string>
-    <string name="guide_apps_need_2">Online paired Windows 11 PC.</string>
+    <string name="guide_apps_need_2">Online paired PC.</string>
     <string name="guide_apps_phone_1">Set up Wireless debugging in Settings › Permissions › Control from your PC.</string>
     <string name="guide_apps_pc_1">Open App streams on your PC and click any phone app to launch it in its own window.</string>
     <string name="guide_apps_opt_1">Close all: Closes all active virtual-display app windows from the Home banner.</string>
@@ -1143,7 +1147,7 @@
     <string name="guide_remote_need_1">Online paired PC with control allowed for this phone.</string>
     <string name="guide_remote_phone_1">On Home, tap Control PC on your paired PC card.</string>
     <string name="guide_remote_phone_2">Switch between Touchpad, Air mouse, Presentation, Keyboard, and Dictate.</string>
-    <string name="guide_remote_pc_1">Approve remote control on your Windows 11 PC when prompted.</string>
+    <string name="guide_remote_pc_1">Approve remote control on your PC when prompted.</string>
     <string name="guide_remote_opt_1">Touchpad speed: Adjust sensitivity in Settings › Features &amp; Data › Control your PC.</string>
     <string name="guide_remote_privacy">Input events travel over encrypted QUIC streams to your paired PC.</string>
     <string name="guide_remote_limits">Air mouse requires a hardware gyroscope on your phone.</string>
@@ -1178,7 +1182,7 @@
     <string name="guide_deck_summary">Use your phone as a grid of shortcut tiles, media keys, volume sliders, and live PC system gauges.</string>
     <string name="guide_deck_where">Home › Paired PC card › Deck</string>
     <string name="guide_deck_needs">Online paired PC</string>
-    <string name="guide_deck_need_1">Online paired Windows 11 PC.</string>
+    <string name="guide_deck_need_1">Online paired PC.</string>
     <string name="guide_deck_phone_1">On Home, tap Deck on your paired PC card and tap any tile to trigger its action.</string>
     <string name="guide_deck_pc_1">Customize Deck pages and tiles in NectarLink on your PC.</string>
     <string name="guide_deck_opt_1">Full screen: Expands the Deck grid across your phone screen.</string>
@@ -1190,7 +1194,7 @@
     <string name="guide_desk_summary">Always-on OLED desk clock with live PC connection status, media controls, and quick actions.</string>
     <string name="guide_desk_where">Home › Paired PC card › Desk clock</string>
     <string name="guide_desk_needs">Paired PC</string>
-    <string name="guide_desk_need_1">Paired Windows 11 PC.</string>
+    <string name="guide_desk_need_1">Paired PC.</string>
     <string name="guide_desk_phone_1">On Home, tap Desk clock on your paired PC card and place your phone on a stand or charger.</string>
     <string name="guide_desk_pc_1">PC media playback and status update live on the Desk Mode display.</string>
     <string name="guide_desk_opt_1">OLED burn-in protection: Periodically shifts layout pixels to protect OLED screens.</string>
@@ -1298,6 +1302,27 @@
     <string name="settings_theme_artwork_body">Sync app &amp; glass colors with playing media artwork</string>
     <string name="settings_wireless_debugging_active">Active via Wireless Debugging · clipboard syncs automatically</string>
     <string name="settings_wireless_debugging_hint">Allow Wireless Debugging so clipboard can sync in the background, or use Send clipboard in the notification</string>
+
+    <!-- Pause for banking apps -->
+    <string name="banking_title">Pause for banking apps</string>
+    <string name="banking_text">Some banking apps won\'t open while Developer options, debugging or an accessibility service is on. Choose them here: NectarLink turns those off while they\'re open and back on when you leave.</string>
+    <plurals name="banking_chosen">
+        <item quantity="one">%1$d app chosen</item>
+        <item quantity="other">%1$d apps chosen</item>
+    </plurals>
+    <string name="banking_needs_elevated">Needs Elevated set up once, so NectarLink can change these settings.</string>
+    <string name="banking_needs_usage">Allow usage access, so NectarLink can see when a banking app is open.</string>
+    <string name="banking_paused_now">Paused now for a banking app.</string>
+    <string name="banking_choose">Choose apps</string>
+    <string name="banking_pick_title">Banking apps</string>
+    <string name="banking_search">Search apps</string>
+    <string name="banking_shortcut">Add shortcut</string>
+    <string name="banking_shortcut_hint">If an app still refuses to open, open it from its shortcut: NectarLink pauses first, then opens it.</string>
+    <string name="banking_channel">Pause for banking apps</string>
+    <string name="banking_paused_title">Paused for a banking app</string>
+    <string name="banking_paused_text">Developer options, debugging and NectarLink\'s accessibility service are off until you leave it.</string>
+    <string name="banking_turn_back_on">Turn back on</string>
+    <string name="action_done">Done</string>
 </resources>
 
 

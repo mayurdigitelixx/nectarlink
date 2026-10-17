@@ -211,7 +211,7 @@ NativeWindow {
                     ? qsTr("Version %1 is already installed. Install it again to repair it.").arg(Setup.version)
                     : Setup.kind === "older"
                     ? qsTr("This PC has a newer version (%1). Installing %2 replaces it.").arg(Setup.installedVersion).arg(Setup.version)
-                    : qsTr("Your Android phone and your Windows PC, working as one.")
+                    : qsTr("Your Android phone and your PC, working as one.")
             }
 
             // Progress.

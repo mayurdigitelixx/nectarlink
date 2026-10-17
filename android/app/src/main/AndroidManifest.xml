@@ -33,6 +33,11 @@
     <uses-permission
         android:name="android.permission.WRITE_SECURE_SETTINGS"
         tools:ignore="ProtectedPermissions" />
+    <!-- Pause for banking apps: which app is in front (usage access, granted
+         by Elevated or in Settings › Usage access). -->
+    <uses-permission
+        android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
     <!-- Quick settings from a PC: Do Not Disturb / silent mode, and screen
          brightness (asked for in Settings, or granted at Elevated). -->
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
@@ -250,6 +255,19 @@
             android:noHistory="false"
             android:taskAffinity=""
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- Pause for banking apps: "Open with banking pause" shortcuts, and
+             the paused notification's Turn back on. -->
+        <activity
+            android:name=".banking.OpenWithPauseActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <receiver
+            android:name=".banking.BankingPause$ResumeReceiver"
+            android:exported="false" />
 
         <!-- The PC's mouse and keyboard on the mirrored screen (Assist); the
              user turns it on in Android's accessibility settings. -->

@@ -40,7 +40,9 @@ Yes. You can pair two or more phones (for example, a personal phone and a work p
 
 ### Do I need to root my phone to use NectarLink?
 
-No. Nothing in NectarLink uses or requires root access. Every everyday feature works at the default `Standard` power level using normal Android permissions, and advanced features (`Elevated`) use Android's official built-in Wireless Debugging (`UID 2000` shell user).
+No. Every everyday feature works at the default `Standard` power level using normal Android permissions, and advanced features (`Elevated`) use Android's own Wireless Debugging, which runs a small helper as the shell user (`UID 2000`).
+
+If your phone is already rooted (Magisk, KernelSU or APatch), you can choose **Use root** when setting up Elevated instead. NectarLink then starts the same helper through root, still as the shell user with the same permissions, so it needs no pairing and comes back by itself after a restart or away from Wi-Fi. NectarLink never asks for root unless you choose this.
 
 ### Why does Android 13+ gray out the Notification access or Accessibility switch ("Restricted settings")?
 

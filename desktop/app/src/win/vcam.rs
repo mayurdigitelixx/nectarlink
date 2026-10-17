@@ -2,7 +2,9 @@
 //! Windows 11 Virtual Camera (`MFCreateVirtualCamera`) registration and
 //! session management for `"NectarLink Webcam"`.
 
+use std::ffi::c_void;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use windows::{
     Win32::{
@@ -10,12 +12,13 @@ use windows::{
         Media::{
             KernelStreaming::KSCATEGORY_VIDEO_CAMERA,
             MediaFoundation::{
-                IMFVirtualCamera, MF_VERSION, MFCreateVirtualCamera, MFSTARTUP_NOSOCKET, MFStartup,
-                MFVirtualCameraAccess_CurrentUser, MFVirtualCameraLifetime_Session,
-                MFVirtualCameraType_SoftwareCameraSource,
+                IMFVirtualCamera, MF_VERSION, MFSTARTUP_NOSOCKET, MFStartup, MFVirtualCameraAccess,
+                MFVirtualCameraAccess_CurrentUser, MFVirtualCameraLifetime, MFVirtualCameraLifetime_Session,
+                MFVirtualCameraType, MFVirtualCameraType_SoftwareCameraSource,
             },
         },
         System::{
+            LibraryLoader::{GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW},
             Registry::{
                 HKEY, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ,
                 RRF_RT_REG_SZ, RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegGetValueW, RegSetValueExW,
@@ -27,7 +30,7 @@ use windows::{
             WindowsAndMessaging::SW_HIDE,
         },
     },
-    core::{HSTRING, PCWSTR, w},
+    core::{GUID, HRESULT, HSTRING, Interface, PCWSTR, s, w},
 };
 
 pub const CLSID_STR: &str = "{8E6C3B74-5D4A-4B9E-9A12-7C8F1E2D3A40}";
@@ -199,6 +202,31 @@ pub fn run_elevated(arg: &'static str, on_done: impl FnOnce(bool) + Send + 'stat
     });
 }
 
+/// `MFCreateVirtualCamera`, from `mfsensorgroup.dll`.
+type CreateVirtualCamera = unsafe extern "system" fn(
+    MFVirtualCameraType,
+    MFVirtualCameraLifetime,
+    MFVirtualCameraAccess,
+    PCWSTR,
+    PCWSTR,
+    *const GUID,
+    u32,
+    *mut *mut c_void,
+) -> HRESULT;
+
+/// Looks up `MFCreateVirtualCamera` when the webcam first starts. It exists on
+/// Windows 11 (build 22000) and later only, and a linked import would stop the
+/// whole app (and its installer, the same exe) from starting on Windows 10.
+fn create_virtual_camera() -> Option<CreateVirtualCamera> {
+    static FOUND: OnceLock<Option<CreateVirtualCamera>> = OnceLock::new();
+    *FOUND.get_or_init(|| unsafe {
+        let module = LoadLibraryExW(w!("mfsensorgroup.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32).ok()?;
+        let found = GetProcAddress(module, s!("MFCreateVirtualCamera"))?;
+        // SAFETY: the signature matches the export's documented prototype.
+        Some(std::mem::transmute::<unsafe extern "system" fn() -> isize, CreateVirtualCamera>(found))
+    })
+}
+
 /// Active `IMFVirtualCamera` session handle.
 pub struct VirtualCameraHandle {
     vcam: IMFVirtualCamera,
@@ -218,18 +246,28 @@ impl VirtualCameraHandle {
     /// Creates and starts the `"NectarLink Webcam"` session-lifetime virtual camera.
     /// Succeeds when `nectarlink_vcam.dll` is registered in `HKLM`.
     pub fn start() -> Result<Self, String> {
+        let create =
+            create_virtual_camera().ok_or_else(|| "the virtual camera needs Windows 11".to_owned())?;
         unsafe {
             MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET).map_err(|e| e.to_string())?;
             let categories = [KSCATEGORY_VIDEO_CAMERA];
-            let vcam = MFCreateVirtualCamera(
+            let name = HSTRING::from(FRIENDLY_NAME);
+            let source = HSTRING::from(CLSID_STR);
+            let mut raw = std::ptr::null_mut();
+            create(
                 MFVirtualCameraType_SoftwareCameraSource,
                 MFVirtualCameraLifetime_Session,
                 MFVirtualCameraAccess_CurrentUser,
-                &HSTRING::from(FRIENDLY_NAME),
-                &HSTRING::from(CLSID_STR),
-                Some(&categories),
+                PCWSTR(name.as_ptr()),
+                PCWSTR(source.as_ptr()),
+                categories.as_ptr(),
+                categories.len() as u32,
+                &mut raw,
             )
+            .ok()
             .map_err(|e| e.to_string())?;
+            // SAFETY: on success the out parameter holds an owned IMFVirtualCamera reference.
+            let vcam = IMFVirtualCamera::from_raw(raw);
             vcam.Start(None).map_err(|e| e.to_string())?;
             Ok(Self { vcam })
         }
@@ -249,6 +287,12 @@ impl Drop for VirtualCameraHandle {
 mod tests {
     use super::*;
     use windows::Win32::System::Registry::HKEY_CURRENT_USER;
+
+    #[test]
+    fn finds_create_virtual_camera_at_runtime_on_windows_11() {
+        // Development and CI run on Windows 11, where the export exists.
+        assert!(create_virtual_camera().is_some());
+    }
 
     #[test]
     fn registers_checks_and_unregisters_under_test_key() {

@@ -18,6 +18,8 @@ import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import app.nectarlink.android.NectarlinkApplication
 import app.nectarlink.android.R
+import app.nectarlink.android.banking.BankingPause
+import app.nectarlink.android.banking.PauseDecider
 import app.nectarlink.android.clipboard.SendActivity
 import app.nectarlink.android.core.CoreState
 import app.nectarlink.android.ui.MainActivity
@@ -72,6 +74,26 @@ class ConnectionService : LifecycleService() {
             while (true) {
                 runCatching { updater.updateIfDue() }.onFailure { Log.i(TAG, "update check failed", it) }
                 delay(UPDATE_WAKE_MS)
+            }
+        }
+        // Pause for banking apps: follow the app in front while it's set up.
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.Default) {
+            val context = applicationContext
+            val decider = PauseDecider()
+            var foreground: BankingPause.Foreground? = null
+            while (true) {
+                if (!BankingPause.isReady(context)) {
+                    foreground = null
+                    delay(BANKING_IDLE_MS)
+                    continue
+                }
+                val follow = foreground ?: BankingPause.Foreground(context).also { foreground = it }
+                when (decider.decide(follow.poll(), BankingPause.apps(context), BankingPause.isPaused(context), System.currentTimeMillis())) {
+                    PauseDecider.Action.PAUSE -> BankingPause.pause(context)
+                    PauseDecider.Action.RESUME -> BankingPause.resume(context)
+                    null -> {}
+                }
+                delay(BANKING_POLL_MS)
             }
         }
         lifecycleScope.launch {
@@ -170,6 +192,9 @@ class ConnectionService : LifecycleService() {
     companion object {
         private const val TAG = "Nectarlink"
         private const val UPDATE_WAKE_MS = 6L * 3600 * 1000
+        /** How often to look at the app in front when Pause for banking apps is set up, and when it isn't. */
+        private const val BANKING_POLL_MS = 800L
+        private const val BANKING_IDLE_MS = 15_000L
         private const val ONGOING_ID = 1
         private const val RINGING_ID = 2
         private const val CHANNEL_CONNECTION = "connection"

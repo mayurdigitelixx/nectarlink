@@ -349,7 +349,7 @@ pub fn downloads_dir() -> PathBuf {
 
 /// How this PC presents itself to phones.
 fn this_device() -> DeviceInfo {
-    let name = hostname::get().ok().and_then(|h| h.into_string().ok()).unwrap_or_else(|| "Windows PC".into());
+    let name = hostname::get().ok().and_then(|h| h.into_string().ok()).unwrap_or_else(|| "PC".into());
     DeviceInfo {
         name,
         kind: if crate::win::is_laptop() { DeviceKind::Laptop } else { DeviceKind::Desktop },

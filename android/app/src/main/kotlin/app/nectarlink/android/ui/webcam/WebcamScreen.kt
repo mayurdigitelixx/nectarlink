@@ -58,6 +58,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.nectarlink.android.R
 import app.nectarlink.android.core.Device
+import app.nectarlink.android.ui.detached
 import app.nectarlink.android.webcam.WebcamService
 import java.util.Locale
 
@@ -244,7 +245,7 @@ fun WebcamScreen(
             ) {
                 if (isStreamingHere && hasCameraPermission) {
                     AndroidView(
-                        factory = { previewView },
+                        factory = { previewView.detached() },
                         modifier = Modifier.fillMaxSize(),
                     )
                 } else {
@@ -393,7 +394,7 @@ fun WebcamScreen(
                             }
                             for ((h, label) in resolutions) {
                                 FilterChip(
-                                    selected = session.height == h,
+                                    selected = session.resolution == h,
                                     onClick = { WebcamService.setResolutionHeight(h) },
                                     label = { Text(label) },
                                 )

@@ -349,6 +349,10 @@ fn live_toast_progress(n: &Notification) -> Option<toast::Progress> {
 }
 
 fn show(device: DeviceId, n: &Notification) {
+    // Cleared here already: the same post sent again doesn't pop up again.
+    if core_host::host().hub.read(|s| s.is_cleared(device, n)) {
+        return;
+    }
     let otp = notification_otp(n);
     if let Some(code) = &otp {
         otp_codes(|c| c.insert((device, n.key.clone()), code.clone()));
@@ -548,7 +552,10 @@ pub fn set_app_rule(app: &str, rule: AppRule) {
 /// Dismisses a phone notification there (and here right away).
 pub fn dismiss(device: &str, key: String) {
     let (Ok(device), Some(node)) = (device.parse::<DeviceId>(), core_host::node()) else { return };
-    core_host::host().hub.update(|s| s.apply(&NodeEvent::NotificationRemoved { device, key: key.clone() }));
+    core_host::host().hub.update(|s| {
+        s.mark_cleared(device, &key);
+        s.apply(&NodeEvent::NotificationRemoved { device, key: key.clone() })
+    });
     toasted(|t| t.get_mut(&device).map(|keys| keys.remove(&key)));
     live_toasts(|l| l.remove(&(device, key.clone())));
     otp_codes(|c| c.remove(&(device, key.clone())));

@@ -973,7 +973,8 @@ private fun FloatingBottomPillDock(
     val baseFill = if (isGlass) {
         scheme.surfaceContainerHighest.copy(alpha = 0.92f)
     } else {
-        scheme.surfaceContainerHigh.copy(alpha = 0.96f)
+        // Solid: the list scrolls under it, and text showed through.
+        scheme.surfaceContainerHigh
     }
     val rimColor = if (isGlass) scheme.outlineVariant else scheme.outlineVariant.copy(alpha = 0.45f)
     Box(

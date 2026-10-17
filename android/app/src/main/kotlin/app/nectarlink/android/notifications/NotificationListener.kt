@@ -35,7 +35,7 @@ class NotificationListener : NotificationListenerService() {
     override fun onListenerConnected() {
         instance = this
         if (isPcActive()) applyHostHints(true)
-        worker.execute {
+        work {
             val snapshot = runCatching { activeNotifications?.toList().orEmpty() }.getOrDefault(emptyList())
             val ranking = runCatching { currentRanking }.getOrNull()
             limiter.clear()
@@ -48,7 +48,7 @@ class NotificationListener : NotificationListenerService() {
 
     override fun onListenerDisconnected() {
         if (instance === this) instance = null
-        worker.execute {
+        work {
             limiter.clear()
             sent.clear()
             core.notificationAccessChanged(false, emptyList())
@@ -57,14 +57,14 @@ class NotificationListener : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification, rankingMap: RankingMap?) {
         val key = sbn.key
-        worker.execute {
+        work {
             val notification = reader.read(sbn, rankingMap, update = key in sent)
             if (notification == null) {
                 // Something we mirrored may have turned into something we don't
                 // (e.g. it became ongoing); take it away on the PC.
                 limiter.cancel(key)
                 if (sent.remove(key)) core.notificationRemoved(key)
-                return@execute
+                return@work
             }
             sent.add(key)
             limiter.onPosted(notification)
@@ -73,7 +73,7 @@ class NotificationListener : NotificationListenerService() {
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
         val key = sbn.key
-        worker.execute {
+        work {
             limiter.cancel(key)
             if (sent.remove(key)) core.notificationRemoved(key)
         }
@@ -81,9 +81,22 @@ class NotificationListener : NotificationListenerService() {
 
     override fun onDestroy() {
         if (instance === this) instance = null
-        worker.execute { limiter.clear() }
-        worker.shutdown()
+        // Android's onDestroy calls onListenerDisconnected, which still needs
+        // the worker; shut it down after (queued work still runs).
         super.onDestroy()
+        worker.shutdown()
+    }
+
+    /**
+     * Runs [task] on the worker. Android can still deliver a callback after
+     * onDestroy (one queued just before it); that one is dropped, since the
+     * disconnect already told the core notification access is gone.
+     */
+    private fun work(task: () -> Unit) {
+        try {
+            worker.execute(task)
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+        }
     }
 
     internal fun applyHostHints(suppressPhoneEffects: Boolean) {
@@ -94,7 +107,7 @@ class NotificationListener : NotificationListenerService() {
 
     /** Re-reads active notifications after Elevated grants sensitive notification access. */
     internal fun refreshActive() {
-        worker.execute {
+        work {
             val items = runCatching {
                 val ranking = currentRanking
                 activeNotifications.orEmpty().mapNotNull { reader.read(it, ranking, update = true) }

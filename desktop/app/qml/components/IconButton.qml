@@ -121,7 +121,11 @@ FocusScope {
     Rectangle {
         id: tooltipPill
         property bool shown: false
-        parent: tooltipPill.visible && button.Window.contentItem ? button.Window.contentItem : button
+        // Always in the window's top layer: its position is worked out there
+        // before it shows (attached to the button until visible, it came out
+        // at the window's top-left corner).
+        parent: button.Window.contentItem ? button.Window.contentItem : button
+        onParentChanged: if (shown) reposition()
         z: 1000
         visible: opacity > 0 && button.effectiveTip.length > 0
         opacity: shown && mouse.containsMouse && !mouse.pressed && button.visible && button.enabled ? 1 : 0

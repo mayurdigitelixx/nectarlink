@@ -1,6 +1,6 @@
 # Clipboard
 
-NectarLink shares your clipboard between your Windows 11 PC and your Android phone. Copy plain text, rich HTML text, an image, or a file on one device and paste it on the other, with smart action chips for links and addresses, an optional encrypted 50-item clipboard history, and automatic filtering for passwords and one-time verification codes.
+NectarLink shares your clipboard between your PC and your Android phone. Copy plain text, rich HTML text, an image, or a file on one device and paste it on the other, with smart action chips for links and addresses, an optional encrypted 50-item clipboard history, and automatic filtering for passwords and one-time verification codes.
 
 <p align="center">
   <img src="images/clipboard-autopaste.png" alt="Clipboard sync and smart context chips in NectarLink" width="760">

@@ -4,7 +4,7 @@
 
 # NectarLink
 
-**Your Android phone and your Windows PC, working as one.**
+**Your Android phone and your PC, working as one.**
 
 Notifications, messages, calls, clipboard, files, photos, screen mirroring and
 phone apps in windows, between Android and Windows 11. Free and open source.
@@ -38,8 +38,8 @@ of new features I wanted that I think you'll enjoy having too.
 
 | | Download | Needs |
 |---|---|---|
-| **Windows** | [Installer (.exe)](https://github.com/thtbee/nectarlink/releases/download/v0.1.3/Nectarlink-0.1.3-x64-setup.exe) | Windows 11, 64-bit |
-| **Android** | [App (.apk)](https://github.com/thtbee/nectarlink/releases/download/v0.1.3/Nectarlink-0.1.3-android.apk) | Android 8.0 or newer |
+| **Windows** | [Installer (.exe)](https://github.com/thtbee/nectarlink/releases/download/v0.1.4/Nectarlink-0.1.4-x64-setup.exe) | Windows 11, 64-bit |
+| **Android** | [App (.apk)](https://github.com/thtbee/nectarlink/releases/download/v0.1.4/Nectarlink-0.1.4-android.apk) | Android 8.0 or newer |
 
 Both apps update themselves from GitHub Releases and check every download
 against its SHA-256 sums.
@@ -48,6 +48,13 @@ against its SHA-256 sums.
 > SmartScreen may warn about the Windows installer the first time, because it
 > isn't code-signed yet: choose **More info**, then **Run anyway**. On Android,
 > allow your browser or file manager to install apps when asked.
+
+> [!IMPORTANT]
+> In India and many other countries, Google Play Protect blocks the APK with
+> no **Install anyway** button. Pause **Scan apps with Play Protect** while you
+> install it (Play Store › your profile › Play Protect › Settings), then turn it
+> back on, or install it from a PC with `adb install`. See
+> [Play Protect blocks the APK](docs/guide/troubleshooting.md#google-play-protect-blocks-the-apk-without-an-install-anyway-button).
 
 ## Get started
 

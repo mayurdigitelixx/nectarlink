@@ -1,6 +1,6 @@
 # NectarLink User Guide
 
-NectarLink connects your Android phone and your Windows 11 PC directly over your local network. It handles notifications, messages, calls, clipboard sharing, file transfers, photo browsing, screen mirroring, camera streaming, audio routing, and cross-device input in one open-source application.
+NectarLink connects your Android phone and your PC directly over your local network. It handles notifications, messages, calls, clipboard sharing, file transfers, photo browsing, screen mirroring, camera streaming, audio routing, and cross-device input in one open-source application.
 
 <p align="center">
   <img src="images/home-bloom.png" alt="NectarLink for Windows home screen in the Bloom theme" width="760">

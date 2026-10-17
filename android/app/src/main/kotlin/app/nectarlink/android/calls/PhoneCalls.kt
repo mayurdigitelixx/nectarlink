@@ -54,6 +54,9 @@ internal class PhoneCalls(
     @Volatile
     private var current: Tracked? = null
 
+    /** Contacts found for the call in progress, by number (only touched on [worker]). */
+    private val contacts = HashMap<String, Pair<String?, ByteArray?>>()
+
     /** Number dialed from a PC, used when Android's OFFHOOK broadcast omits the number. */
     @Volatile
     private var lastDialed: Pair<String, Long>? = null
@@ -119,14 +122,18 @@ internal class PhoneCalls(
         when (state) {
             TelephonyManager.EXTRA_STATE_RINGING -> when {
                 call == null -> {
-                    val tracked = Tracked(id = System.currentTimeMillis().toString(), incoming = true, number = number)
+                    val tracked = Tracked(
+                        id = System.currentTimeMillis().toString(),
+                        incoming = true,
+                        number = number ?: CallCompanion.number(),
+                    )
                     current = tracked
-                    report(tracked, CallPhase.RINGING, withContact = true)
+                    report(tracked, CallPhase.RINGING)
                 }
                 // The same call again, now with its number.
                 call.number == null && number != null && !call.answered -> {
                     call.number = number
-                    report(call, CallPhase.RINGING, withContact = true)
+                    report(call, CallPhase.RINGING)
                 }
             }
             TelephonyManager.EXTRA_STATE_OFFHOOK -> when {
@@ -134,10 +141,12 @@ internal class PhoneCalls(
                     // Calling out.
                     val now = System.currentTimeMillis()
                     val dialed = lastDialed?.takeIf { now - it.second < 15_000L }?.first
-                    val outNumber = number ?: dialed
+                    // Android's broadcast never has the number of a call made on
+                    // the phone: the one dialed from a PC, or Telecom's.
+                    val outNumber = number ?: dialed ?: CallCompanion.number()
                     val tracked = Tracked(id = now.toString(), incoming = false, number = outNumber, answered = true, since = now)
                     current = tracked
-                    report(tracked, CallPhase.ACTIVE, withContact = true)
+                    report(tracked, CallPhase.ACTIVE)
                 }
                 !call.answered -> {
                     if (call.number == null && number != null) {
@@ -145,7 +154,7 @@ internal class PhoneCalls(
                     }
                     call.answered = true
                     call.since = System.currentTimeMillis()
-                    report(call, CallPhase.ACTIVE, withContact = false)
+                    report(call, CallPhase.ACTIVE)
                 }
             }
             TelephonyManager.EXTRA_STATE_IDLE -> if (call != null) {
@@ -155,20 +164,20 @@ internal class PhoneCalls(
                 if (call.incoming && !call.answered && !call.declined) {
                     // Missed, or turned down on the phone: the call log knows,
                     // once it's written.
-                    main.postDelayed({ report(call, CallPhase.ENDED, withContact = true, missedCheck = true) }, LOG_DELAY_MS)
+                    main.postDelayed({ report(call, CallPhase.ENDED, missedCheck = true) }, LOG_DELAY_MS)
                 } else {
-                    report(call, CallPhase.ENDED, withContact = false)
+                    report(call, CallPhase.ENDED)
                 }
             }
         }
     }
 
-    private fun report(call: Tracked, phase: CallPhase, withContact: Boolean, missedCheck: Boolean = false) {
+    private fun report(call: Tracked, phase: CallPhase, missedCheck: Boolean = false) {
         // A snapshot: the call may change while this waits its turn.
         val number = call.number
         val incoming = call.incoming
         val since = call.since
-        worker.execute { send(call.id, phase, incoming, number, since, withContact, missedCheck) }
+        worker.execute { send(call.id, phase, incoming, number, since, missedCheck) }
     }
 
     private fun send(
@@ -177,10 +186,13 @@ internal class PhoneCalls(
         incoming: Boolean,
         number: String?,
         since: Long?,
-        withContact: Boolean,
         missedCheck: Boolean,
     ) {
-        val (name, photo) = if (withContact) contact(number) else null to null
+        // Every report carries the name (an answered call kept it before
+        // only on the phone); looked up once per number while the call lasts.
+        val (found, photo) = number?.let { contacts.getOrPut(it) { contact(it) } } ?: (null to null)
+        val name = found ?: CallCompanion.name()
+        if (phase == CallPhase.ENDED) contacts.clear()
         val missed = missedCheck && wasMissed(id, number)
         onChange(
             Call(
@@ -200,13 +212,22 @@ internal class PhoneCalls(
     /** The companion's mute, speaker or hold changed: PCs hear of it. */
     private fun resendActive() {
         main.post {
-            current?.takeIf { it.answered }?.let { report(it, CallPhase.ACTIVE, withContact = true) }
+            current?.takeIf { it.answered }?.let { report(it, CallPhase.ACTIVE) }
+        }
+    }
+
+    /** The companion learned the call's number, which Android's broadcast didn't have. */
+    private fun numberKnown(number: String) {
+        main.post {
+            val call = current?.takeIf { it.number == null } ?: return@post
+            call.number = number
+            report(call, if (call.answered) CallPhase.ACTIVE else CallPhase.RINGING)
         }
     }
 
     /** The contact's name and photo for a number, when allowed and known. */
-    private fun contact(number: String?): Pair<String?, ByteArray?> {
-        if (number == null || !granted(context, Manifest.permission.READ_CONTACTS)) return null to null
+    private fun contact(number: String): Pair<String?, ByteArray?> {
+        if (!granted(context, Manifest.permission.READ_CONTACTS)) return null to null
         return runCatching {
             val uri = Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(number))
             val columns = arrayOf(ContactsContract.PhoneLookup.DISPLAY_NAME, ContactsContract.PhoneLookup.PHOTO_THUMBNAIL_URI)
@@ -462,6 +483,11 @@ internal class PhoneCalls(
         /** The companion's view of the call changed (mute, speaker, hold). */
         internal fun controlsChanged() {
             instance?.resendActive()
+        }
+
+        /** The companion has the call's number (Telecom's handle). */
+        internal fun companionNumber(number: String) {
+            instance?.numberKnown(number)
         }
         private const val MAX_PHOTO_BYTES = 64 * 1024
         private const val MAX_LOG_PAGE = 100

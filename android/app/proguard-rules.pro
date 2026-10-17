@@ -1,3 +1,8 @@
+# Keep class and method names readable in release APKs while still letting R8
+# shrink unused code and resources, so crash stack traces from users read as
+# they are, without a mapping file.
+-dontobfuscate
+
 # Preserve annotations (required by JNA @Structure.FieldOrder on UniFFI structs),
 # generic signatures, inner classes ($ByValue / $ByReference), and line numbers.
 -keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod,SourceFile,LineNumberTable

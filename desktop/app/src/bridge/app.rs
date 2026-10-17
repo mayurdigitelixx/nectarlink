@@ -2160,7 +2160,7 @@ fn load_guide_doc_content(raw_key: &str) -> (String, String) {
     let (title, body) = match key.as_str() {
         "overview" => (
             "NectarLink overview",
-            "NectarLink links your Android phone and your Windows 11 PC directly on your local network or over a USB cable.\n\n\
+            "NectarLink links your Android phone and your PC directly on your local network or over a USB cable.\n\n\
              How it works\n\
              - Devices discover each other over local Wi-Fi (mDNS) or USB (ADB reverse tunnel) and connect over QUIC (TLS 1.3).\n\
              - Every connection is mutually authenticated using Ed25519 device keys generated on each device.\n\
@@ -2295,7 +2295,7 @@ fn load_guide_doc_content(raw_key: &str) -> (String, String) {
         "pc-mirror" => (
             "Share PC screen",
             "What it does\n\
-             Streams your Windows PC monitor to your phone so you can view your desktop from across the room and use your phone as a trackpad or laser pointer.\n\n\
+             Streams your PC's screen to your phone so you can view your desktop from across the room and use your phone as a trackpad or laser pointer.\n\n\
              Where to find it\n\
              - Started from the NectarLink app on your phone.\n\
              - Settings › Devices › Share PC screen to phone.\n\n\
@@ -2355,7 +2355,7 @@ fn load_guide_doc_content(raw_key: &str) -> (String, String) {
         "remote-input" => (
             "Remote input",
             "What it does\n\
-             Lets your phone act as a wireless trackpad, keyboard, presentation clicker, and on-screen laser pointer for your Windows PC.\n\n\
+             Lets your phone act as a wireless trackpad, keyboard, presentation clicker, and on-screen laser pointer for your PC.\n\n\
              Where to find it\n\
              - On your phone: Home › Control PC.\n\
              - Settings › Devices › Remote mouse, keyboard & Deck.\n\n\

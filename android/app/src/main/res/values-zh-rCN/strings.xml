@@ -86,6 +86,10 @@
     <string name="elevated_failed">无法启动，请确认无线调试已开启，然后重试。</string>
     <string name="elevated_not_paired">手机已忘记NectarLink的配对信息，请重新设置。</string>
     <string name="elevated_set_up">设置</string>
+    <string name="elevated_use_root">使用Root</string>
+    <string name="elevated_root_hint">这台手机已Root，Elevated也可以改用Root启动：无需配对，重启后或离开Wi-Fi时也会自动恢复。权限与使用无线调试时相同。</string>
+    <string name="elevated_running_root">已通过Root开启：电脑的鼠标和键盘就像真实的触摸屏和键盘一样工作。</string>
+    <string name="elevated_root_failed">未获得Root授权，或Root管理器无法以shell用户身份启动NectarLink的辅助程序。你可以改用无线调试进行设置。</string>
     <string name="elevated_turn_off">关闭</string>
     <string name="elevated_try_again">重试</string>
     <string name="elevated_steps_title">设置无线调试</string>
@@ -648,7 +652,7 @@
     <string name="walkthrough_action_done">完成</string>
     <string name="walkthrough_action_open_guide">打开功能指南</string>
     <string name="walkthrough_welcome_title">连接手机与电脑</string>
-    <string name="walkthrough_welcome_subtitle">通知、通话、消息、文件、剪贴板、摄像头和屏幕，与你的 Windows 11 电脑共享。</string>
+    <string name="walkthrough_welcome_subtitle">通知、通话、消息、文件、剪贴板、摄像头和屏幕，与你的电脑共享。</string>
     <string name="walkthrough_welcome_card_heading">设计即隐私</string>
     <string name="walkthrough_welcome_tls_title">端到端加密（TLS 1.3）</string>
     <string name="walkthrough_welcome_tls_body">每次连接都使用相互验证的设备证书。</string>
@@ -696,7 +700,7 @@
     <string name="walkthrough_perm_access_does">用鼠标和键盘从电脑控制投屏的手机屏幕。</string>
     <string name="walkthrough_perm_access_requires">Android 需要 NectarLink 无障碍服务或高级权限。</string>
     <string name="walkthrough_pair_title">与电脑配对</string>
-    <string name="walkthrough_pair_subtitle">在你的 Windows 11 电脑上打开 NectarLink。扫描其二维码或在下方选择你的电脑。</string>
+    <string name="walkthrough_pair_subtitle">在你的电脑上打开 NectarLink。扫描其二维码或在下方选择你的电脑。</string>
     <string name="walkthrough_pair_ready_title">已配对电脑</string>
     <string name="walkthrough_pair_badge_paired">已配对</string>
     <string name="walkthrough_pair_device_online">%1$s · 已连接</string>
@@ -708,7 +712,7 @@
     <string name="walkthrough_pair_usb_title">USB 自动配对</string>
     <string name="walkthrough_pair_usb_hint">连接 USB 数据线并启用 USB 调试即可自动配对。</string>
     <string name="walkthrough_power_title">选择权限级别</string>
-    <string name="walkthrough_power_subtitle">选择你的 Windows 11 电脑对此手机拥有多少控制权。</string>
+    <string name="walkthrough_power_subtitle">选择你的电脑对此手机拥有多少控制权。</string>
     <string name="walkthrough_power_current_badge">当前：%1$s</string>
     <string name="walkthrough_power_badge_active">已启用</string>
     <string name="walkthrough_power_badge_available">可用</string>
@@ -800,7 +804,7 @@
     <string name="guide_notif_needs">通知使用权，并为该电脑开启通知开关</string>
     <string name="guide_notif_need_1">已为 NectarLink 开启 Android 通知使用权。</string>
     <string name="guide_notif_need_2">在 Android 13 及以上，若为侧载安装，需在应用信息中允许受限设置。</string>
-    <string name="guide_notif_need_3">Windows 11 电脑已配对并在线。</string>
+    <string name="guide_notif_need_3">电脑已配对并在线。</string>
     <string name="guide_notif_phone_1">打开设置 › 权限 › 通知，然后点按允许。</string>
     <string name="guide_notif_phone_2">在 Android 通知使用权中开启 NectarLink。</string>
     <string name="guide_notif_pc_1">在电脑通知中心或 NectarLink 窗口中查看手机通知。</string>
@@ -828,7 +832,7 @@
     <string name="guide_media_where">首页 › 已配对电脑卡片 › 电脑音频</string>
     <string name="guide_media_needs">手机媒体需通知使用权，电脑音频需已配对电脑在线</string>
     <string name="guide_media_need_1">需要 Android 通知使用权以读取活动的媒体会话。</string>
-    <string name="guide_media_need_2">已配对且在线的 Windows 11 电脑。</string>
+    <string name="guide_media_need_2">已配对且在线的电脑。</string>
     <string name="guide_media_phone_1">在首页的已配对电脑卡片上展开电脑音频。</string>
     <string name="guide_media_phone_2">调节电脑音量滑块，或开启将手机用作扬声器。</string>
     <string name="guide_media_pc_1">在电脑上使用播放、暂停、下一个和上一个控制手机播放。</string>
@@ -879,7 +883,7 @@
     <string name="guide_files_summary">通过 Wi-Fi、以太网或 USB 在手机和电脑之间传输文件或文件夹，支持暂停和继续。</string>
     <string name="guide_files_where">首页 › 已配对电脑卡片 › 发送文件 / 发送文件夹</string>
     <string name="guide_files_needs">已配对电脑</string>
-    <string name="guide_files_need_1">已配对的 Windows 11 电脑（离线文件在发送队列中最多等待 7 天）。</string>
+    <string name="guide_files_need_1">已配对的电脑（离线文件在发送队列中最多等待 7 天）。</string>
     <string name="guide_files_phone_1">在首页的已配对电脑卡片上点按发送文件或发送文件夹。</string>
     <string name="guide_files_phone_2">在首页的传输卡片中暂停、继续或取消进行中的传输。</string>
     <string name="guide_files_pc_1">将文件拖到电脑上的 NectarLink 窗口或顶部边缘岛。</string>
@@ -966,7 +970,7 @@
     <string name="guide_mirror_summary">将手机屏幕和内部音频串流到电脑上的窗口，或在手机上查看电脑屏幕。</string>
     <string name="guide_mirror_where">设置 › 权限 › 从电脑控制（或 首页 › 控制电脑）</string>
     <string name="guide_mirror_needs">在线的已配对电脑；鼠标和键盘控制需要辅助功能或高级权限</string>
-    <string name="guide_mirror_need_1">在线的已配对 Windows 11 电脑。</string>
+    <string name="guide_mirror_need_1">在线的已配对电脑。</string>
     <string name="guide_mirror_need_2">可选：使用辅助功能（无障碍）或高级权限实现电脑鼠标和键盘输入。</string>
     <string name="guide_mirror_phone_1">从电脑发起投屏时，在 Android 的截屏提示中点击立即开始。</string>
     <string name="guide_mirror_phone_2">随时点击首页横幅上的停止即可结束屏幕共享。</string>
@@ -979,7 +983,7 @@
     <string name="guide_apps_where">设置 › 权限 › 从电脑控制 › 真实触控与按键（无线调试）</string>
     <string name="guide_apps_needs">高级权限（无线调试）</string>
     <string name="guide_apps_need_1">已通过无线调试设置高级权限。</string>
-    <string name="guide_apps_need_2">在线的已配对 Windows 11 电脑。</string>
+    <string name="guide_apps_need_2">在线的已配对电脑。</string>
     <string name="guide_apps_phone_1">在 设置 › 权限 › 从电脑控制 中设置无线调试。</string>
     <string name="guide_apps_pc_1">在电脑上打开应用串流，点击任意手机应用即可在独立窗口中启动。</string>
     <string name="guide_apps_opt_1">全部关闭：从首页横幅关闭所有活动的虚拟显示应用窗口。</string>
@@ -1023,7 +1027,7 @@
     <string name="guide_remote_need_1">已允许此手机控制的在线已配对电脑。</string>
     <string name="guide_remote_phone_1">在首页的已配对电脑卡片上点击控制电脑。</string>
     <string name="guide_remote_phone_2">在触控板、空中鼠标、演示、键盘和听写之间切换。</string>
-    <string name="guide_remote_pc_1">在 Windows 11 电脑上收到提示时批准远程控制。</string>
+    <string name="guide_remote_pc_1">在电脑上收到提示时批准远程控制。</string>
     <string name="guide_remote_opt_1">触控板速度：在 设置 › 功能与数据 › 控制您的电脑 中调整灵敏度。</string>
     <string name="guide_remote_privacy">输入事件通过加密的 QUIC 流传输到已配对电脑。</string>
     <string name="guide_remote_limits">空中鼠标需要手机具备硬件陀螺仪。</string>
@@ -1052,7 +1056,7 @@
     <string name="guide_deck_summary">将手机用作快捷磁贴、媒体按键、音量滑块和电脑系统实时仪表盘的网格。</string>
     <string name="guide_deck_where">首页 › 已配对电脑卡片 › 面板</string>
     <string name="guide_deck_needs">在线的已配对电脑</string>
-    <string name="guide_deck_need_1">在线的已配对 Windows 11 电脑。</string>
+    <string name="guide_deck_need_1">在线的已配对电脑。</string>
     <string name="guide_deck_phone_1">在首页的已配对电脑卡片上点击面板，然后点击任意磁贴即可触发其操作。</string>
     <string name="guide_deck_pc_1">在电脑上的 NectarLink 中自定义面板页面和磁贴。</string>
     <string name="guide_deck_opt_1">全屏：将面板网格扩展到整个手机屏幕。</string>
@@ -1062,7 +1066,7 @@
     <string name="guide_desk_summary">常亮的 OLED 桌面时钟，显示电脑实时连接状态、媒体控制和快捷操作。</string>
     <string name="guide_desk_where">首页 › 已配对电脑卡片 › 桌面时钟</string>
     <string name="guide_desk_needs">已配对电脑</string>
-    <string name="guide_desk_need_1">已配对的 Windows 11 电脑。</string>
+    <string name="guide_desk_need_1">已配对的电脑。</string>
     <string name="guide_desk_phone_1">在首页的已配对电脑卡片上点击桌面时钟，然后将手机放在支架或充电器上。</string>
     <string name="guide_desk_pc_1">电脑的媒体播放和状态会实时更新到桌面模式显示中。</string>
     <string name="guide_desk_opt_1">OLED 烧屏保护：定期偏移布局像素以保护 OLED 屏幕。</string>
@@ -1162,4 +1166,23 @@
     <string name="settings_theme_artwork_body">让应用与玻璃配色跟随播放中的媒体封面</string>
     <string name="settings_wireless_debugging_active">无线调试已启用 · 剪贴板会自动同步</string>
     <string name="settings_wireless_debugging_hint">允许无线调试后，剪贴板才能在后台同步；也可以在通知里点「发送剪贴板」</string>
+    <!-- Pause for banking apps -->
+    <string name="banking_title">为银行应用暂停</string>
+    <string name="banking_text">部分银行应用在开发者选项、调试或无障碍服务开启时无法打开。在这里选择这些应用：打开它们时，NectarLink会关闭这些设置，离开后再重新开启。</string>
+    <plurals name="banking_chosen">
+        <item quantity="other">已选择%1$d个应用</item>
+    </plurals>
+    <string name="banking_needs_elevated">需要先设置一次无线调试，NectarLink才能更改这些设置。</string>
+    <string name="banking_needs_usage">请允许使用情况访问权限，以便NectarLink知道银行应用何时打开。</string>
+    <string name="banking_paused_now">已为银行应用暂停。</string>
+    <string name="banking_choose">选择应用</string>
+    <string name="banking_pick_title">银行应用</string>
+    <string name="banking_search">搜索应用</string>
+    <string name="banking_shortcut">添加快捷方式</string>
+    <string name="banking_shortcut_hint">如果应用仍然无法打开，请通过它的快捷方式打开：NectarLink会先暂停，再打开它。</string>
+    <string name="banking_channel">为银行应用暂停</string>
+    <string name="banking_paused_title">已为银行应用暂停</string>
+    <string name="banking_paused_text">在你离开该应用之前，开发者选项、调试和NectarLink的无障碍服务将保持关闭。</string>
+    <string name="banking_turn_back_on">重新开启</string>
+    <string name="action_done">完成</string>
 </resources>

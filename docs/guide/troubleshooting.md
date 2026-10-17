@@ -37,7 +37,18 @@ Several Android manufacturers add their own proprietary background task killers 
 | **Vivo / iQOO (Funtouch OS / OriginOS)** | Open **Android Settings › Apps › NectarLink › Battery**, select **Unrestricted** (or **High background power usage**), and enable **Autostart** in Background power consumption management. |
 | **Huawei / Honor (EMUI)** | Open **Phone Manager (or System Optimizer) › App launch**, turn **Off** **Manage automatically** for NectarLink, and keep all three toggles (**Auto-launch**, **Secondary launch**, and **Run in background**) turned **On**. |
 
-## 3. Android 13+ "Restricted Settings" (Grayed-Out Notification or Accessibility Switch)
+## 3. Android Sideloading: Play Protect Blocks and Android 13+ "Restricted Settings"
+
+### Google Play Protect Blocks the APK Without an "Install anyway" Button
+
+When you download `Nectarlink-<version>-android.apk` in a mobile browser, Google Play Protect may show a prompt:
+
+- **If "More details" is shown**: Tap **More details › Install anyway**.
+- **If there is no "Install anyway" button (only "OK")**: Google Play Protect's **Enhanced Fraud Protection**, on in 185 markets including India, automatically blocks browser-sideloaded APKs that declare `READ_SMS`, `BIND_NOTIFICATION_LISTENER_SERVICE`, or `BIND_ACCESSIBILITY_SERVICE` in `AndroidManifest.xml`. To install:
+  1. **Option A (On phone)**: Open **Google Play Store**, tap your **profile icon** (top right) › **Play Protect** › **Settings** (gear icon), and temporarily toggle off **Scan apps with Play Protect** (choose **Pause**). Install `Nectarlink-<version>-android.apk`, then turn **Scan apps with Play Protect** back on.
+  2. **Option B (Over USB from PC)**: Connect your phone with USB debugging enabled and run `adb install -r Nectarlink-<version>-android.apk`.
+
+### Android 13+ "Restricted Settings" (Grayed-Out Notification or Accessibility Switch)
 
 On Android 13 and newer, if you install an APK downloaded from a browser or GitHub Releases, Android disables the **Notification access** and **Accessibility** switches until you explicitly allow restricted settings for that app:
 
@@ -58,6 +69,18 @@ On Android 13 and newer, if you install an APK downloaded from a browser or GitH
 ### `Elevated` Stops After Turning Developer Options Off
 
 - If you turn the master **Developer options** switch off in Android Settings, Android stops Wireless Debugging and terminates the `Elevated` shell helper. Keep **Developer options** turned on if you use `Elevated` features. (When you reboot your phone or reconnect to Wi-Fi with Developer options on, NectarLink automatically re-enables Wireless Debugging and restarts `Elevated` by itself.)
+
+### A Banking App Won't Open
+
+Many banking apps refuse to run while **Developer options**, USB or Wireless Debugging, or an accessibility service is on, all of which `Elevated` and Assist use. NectarLink can switch them off while those apps are open:
+
+1. Open **Settings › Permissions › Control from your PC › Pause for banking apps** and tap **Choose apps**.
+2. Pick your banking and payment apps. NectarLink needs `Elevated` set up once, and usage access (tap **Allow** if it asks), to see which app is open.
+3. Open a banking app as usual. NectarLink turns off Developer options, debugging and its accessibility service while it's open, and turns back on exactly what was on when you leave. A notification shows while it's paused, with **Turn back on**.
+
+If an app checks before NectarLink notices it, tap **Add shortcut** next to it and open it from that home screen shortcut: NectarLink pauses first, then opens the app.
+
+Some banking apps also refuse to run on a phone that was ever rooted (on Samsung phones, a tripped Knox flag). NectarLink can't change that.
 
 ## 5. Troubleshooting USB Auto-Pair and `On USB` Transport
 

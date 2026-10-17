@@ -2,6 +2,7 @@
 package app.nectarlink.android
 
 import android.app.Application
+import app.nectarlink.android.banking.BankingPause
 import app.nectarlink.android.core.Core
 import app.nectarlink.android.elevated.Elevated
 import app.nectarlink.android.update.AppUpdater
@@ -21,6 +22,9 @@ class NectarlinkApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Before Elevated: it waits while paused for a banking app.
+        BankingPause.init(this)
+        BankingPause.restoreIfStranded(this)
         Elevated.init(this)
         // What the phone offers PCs follows Elevated starting and stopping.
         Elevated.onChange = { core.refreshNotificationAccess() }
