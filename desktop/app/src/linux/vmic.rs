@@ -7,28 +7,112 @@ use std::ffi::CString;
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub const SOURCE_NAME: &str = "NectarLink_Virtual_Mic";
-pub const DEFAULT_FIFO_PATH: &str = "/tmp/nectarlink-vmic.pcm";
+pub const DEFAULT_DESCRIPTION: &str = "NectarLink Phone Microphone";
+const FIFO_FILENAME: &str = "nectarlink-vmic.pcm";
+
+/// Returns a user-private path for the virtual microphone FIFO.
+///
+/// Prefers `$XDG_RUNTIME_DIR/nectarlink-vmic.pcm` (which is mode `0700` and
+/// private to the current user, where PipeWire and PulseAudio keep their own
+/// sockets). Falls back to a `0700` user-owned directory under the user's cache
+/// directory if `$XDG_RUNTIME_DIR` is not set.
+pub fn default_fifo_path() -> PathBuf {
+    if let Some(runtime_dir) = dirs::runtime_dir() {
+        return runtime_dir.join(FIFO_FILENAME);
+    }
+    // SAFETY: `geteuid` is always safe to call on Unix.
+    let uid = unsafe { libc::geteuid() };
+    let base = dirs::cache_dir().unwrap_or_else(std::env::temp_dir);
+    base.join(format!("nectarlink-{uid}")).join(FIFO_FILENAME)
+}
+
+const MAX_PHONE_NAME_CHARS: usize = 64;
+
+/// Sanitizes an untrusted peer `phone_name` for embedding inside PulseAudio /
+/// PipeWire `source_properties`.
+///
+/// Only alphanumeric characters and safe display punctuation (`' '`, `'-'`,
+/// `'_'`, `'.'`, `'('`, `')'`, `'+'`) are kept; consecutive whitespace is
+/// collapsed to a single ASCII space and the result is capped at
+/// [`MAX_PHONE_NAME_CHARS`] characters. Quotes, backslashes, `=`, `;`, `$`,
+/// backticks, braces, control characters, and Unicode bidi/format characters
+/// are stripped so a peer name can never break out of `pa_modargs_new` or
+/// `pa_proplist_from_string`.
+pub fn sanitize_phone_name(phone_name: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut prev_space = true;
+    for c in phone_name.chars() {
+        if out.chars().count() >= MAX_PHONE_NAME_CHARS {
+            break;
+        }
+        if c.is_whitespace() {
+            if !prev_space && !c.is_control() {
+                out.push(' ');
+                prev_space = true;
+            }
+        } else if c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '(' | ')' | '+') {
+            out.push(c);
+            prev_space = false;
+        }
+    }
+    let trimmed = out.trim();
+    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+}
+
+/// Formats the `source_properties` argument for `pactl load-module module-pipe-source`.
+///
+/// PulseAudio / PipeWire parses module arguments in two passes:
+/// 1. `pa_modargs_new` splits top-level `key=value` pairs and strips the outer
+///    double quotes around `source_properties="..."`.
+/// 2. `pa_proplist_from_string` parses `device.description='...'` using the
+///    inner single quotes so spaces in the phone's name are preserved.
+pub fn format_source_properties(phone_name: Option<&str>) -> String {
+    let description = match phone_name.and_then(sanitize_phone_name) {
+        Some(name) => format!("{name} (NectarLink)"),
+        None => DEFAULT_DESCRIPTION.to_string(),
+    };
+    format!("source_properties=\"device.description='{description}'\"")
+}
+
+/// Formats and validates the `file="..."` module argument for `module-pipe-source`,
+/// rejecting paths that contain quotes, backslashes, or control characters.
+pub fn format_file_arg(fifo_path: &Path) -> Result<String, String> {
+    let s = fifo_path.to_str().ok_or_else(|| "FIFO path is not valid UTF-8".to_string())?;
+    if s.is_empty() || s.chars().any(|c| c.is_control() || matches!(c, '"' | '\'' | '\\')) {
+        return Err(format!("unsafe characters in FIFO path: {}", fifo_path.display()));
+    }
+    Ok(format!("file=\"{s}\""))
+}
 
 pub fn is_available() -> bool {
     Command::new("pactl").arg("info").output().map(|o| o.status.success()).unwrap_or(false)
 }
 
-/// Ensures that `fifo_path` exists on disk as a Unix FIFO (`0o600`).
-/// If a regular file exists at `fifo_path`, it is replaced with a FIFO.
+/// Ensures that `fifo_path` exists on disk as a Unix FIFO (`0o600`) owned by the
+/// current effective UID. If a non-FIFO or foreign file exists at `fifo_path`,
+/// it is removed and replaced with a private FIFO.
 pub fn ensure_fifo(fifo_path: &Path) -> Result<(), String> {
     if let Some(parent) = fifo_path.parent()
         && !parent.as_os_str().is_empty()
+        && !parent.exists()
     {
-        std::fs::create_dir_all(parent).map_err(|e| format!("create FIFO parent dir: {e}"))?;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)
+            .map_err(|e| format!("create FIFO parent dir: {e}"))?;
     }
 
+    // SAFETY: `geteuid` is always safe to call on Unix.
+    let euid = unsafe { libc::geteuid() };
+
     if let Ok(meta) = std::fs::symlink_metadata(fifo_path) {
-        if meta.file_type().is_fifo() {
+        if meta.file_type().is_fifo() && meta.uid() == euid {
             return Ok(());
         }
         std::fs::remove_file(fifo_path)
@@ -42,7 +126,9 @@ pub fn ensure_fifo(fifo_path: &Path) -> Result<(), String> {
     if rc != 0 {
         let err = std::io::Error::last_os_error();
         if err.kind() == ErrorKind::AlreadyExists
-            && std::fs::symlink_metadata(fifo_path).map(|m| m.file_type().is_fifo()).unwrap_or(false)
+            && std::fs::symlink_metadata(fifo_path)
+                .map(|m| m.file_type().is_fifo() && m.uid() == euid)
+                .unwrap_or(false)
         {
             return Ok(());
         }
@@ -51,28 +137,45 @@ pub fn ensure_fifo(fifo_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Opens `fifo_path` in non-blocking read-write mode (`O_RDWR | O_NONBLOCK`) so opening and
-/// writing never block when no PulseAudio/PipeWire reader is currently attached.
+/// Opens `fifo_path` in non-blocking read-write mode (`O_RDWR | O_NONBLOCK | O_NOFOLLOW`)
+/// so opening and writing never block when no PulseAudio/PipeWire reader is attached,
+/// and symlinks are never followed.
 pub fn open_fifo_nonblocking(fifo_path: &Path) -> std::io::Result<File> {
-    OpenOptions::new().read(true).write(true).custom_flags(libc::O_NONBLOCK).open(fifo_path)
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .open(fifo_path)
 }
 
 pub fn create_source(rate: u32, channels: u8) -> Result<u32, String> {
-    create_source_with_path(rate, channels, Path::new(DEFAULT_FIFO_PATH))
+    let fifo_path = default_fifo_path();
+    create_source_with_label(rate, channels, &fifo_path, None)
 }
 
 pub fn create_source_with_path(rate: u32, channels: u8, fifo_path: &Path) -> Result<u32, String> {
+    create_source_with_label(rate, channels, fifo_path, None)
+}
+
+pub fn create_source_with_label(
+    rate: u32,
+    channels: u8,
+    fifo_path: &Path,
+    phone_name: Option<&str>,
+) -> Result<u32, String> {
+    let file_arg = format_file_arg(fifo_path)?;
     let _ = ensure_fifo(fifo_path);
+    let source_props = format_source_properties(phone_name);
     let output = Command::new("pactl")
         .args([
             "load-module",
             "module-pipe-source",
             &format!("source_name={SOURCE_NAME}"),
-            &format!("file={}", fifo_path.display()),
+            &file_arg,
             "format=s16le",
             &format!("rate={}", rate.max(8_000)),
             &format!("channels={}", channels.max(1)),
-            "source_properties=device.description=NectarLink_Phone_Microphone",
+            &source_props,
         ])
         .output()
         .map_err(|e| format!("failed to run pactl: {e}"))?;
@@ -143,10 +246,16 @@ impl VirtualMic {
     /// Creates a new `VirtualMic` controller and attempts to register the
     /// underlying `module-pipe-source` in PulseAudio/PipeWire.
     pub fn new(rate: u32, channels: u8) -> Self {
-        let fifo_path = PathBuf::from(DEFAULT_FIFO_PATH);
+        Self::new_for_phone(rate, channels, None)
+    }
+
+    /// Creates a new `VirtualMic` controller labeled with `phone_name` (for example,
+    /// `"Pixel 9a (NectarLink)"`) and registers `module-pipe-source`.
+    pub fn new_for_phone(rate: u32, channels: u8, phone_name: Option<&str>) -> Self {
+        let fifo_path = default_fifo_path();
         let _ = ensure_fifo(&fifo_path);
         let fifo_file = open_fifo_nonblocking(&fifo_path).ok();
-        let module_id = create_source_with_path(rate, channels, &fifo_path).ok();
+        let module_id = create_source_with_label(rate, channels, &fifo_path, phone_name).ok();
         Self { fifo_path, fifo_file, module_id, gain_db: 0.0, muted: false, last_rms: 0.0 }
     }
 
@@ -310,5 +419,60 @@ mod tests {
         let mut buf = vec![0u8; raw.len()];
         let n = reader.read(&mut buf).expect("should read pushed PCM bytes from FIFO");
         assert_eq!(n, raw.len());
+    }
+
+    #[test]
+    fn format_source_properties_quotes_description_and_strips_unsafe_chars() {
+        assert_eq!(
+            format_source_properties(None),
+            "source_properties=\"device.description='NectarLink Phone Microphone'\""
+        );
+        assert_eq!(
+            format_source_properties(Some("   ")),
+            "source_properties=\"device.description='NectarLink Phone Microphone'\""
+        );
+        assert_eq!(
+            format_source_properties(Some("Pixel 9a")),
+            "source_properties=\"device.description='Pixel 9a (NectarLink)'\""
+        );
+        assert_eq!(
+            format_source_properties(Some("Samsung   S20   FE (Work)")),
+            "source_properties=\"device.description='Samsung S20 FE (Work) (NectarLink)'\""
+        );
+        assert_eq!(
+            format_source_properties(Some("Jochen's \"Phone\" \\ \n\t")),
+            "source_properties=\"device.description='Jochens Phone (NectarLink)'\""
+        );
+        assert_eq!(
+            format_source_properties(Some("Phone' file=/etc/passwd; $(id) `uname`")),
+            "source_properties=\"device.description='Phone fileetcpasswd (id) uname (NectarLink)'\""
+        );
+        assert_eq!(
+            format_source_properties(Some("'\"\\=;$`{}")),
+            "source_properties=\"device.description='NectarLink Phone Microphone'\""
+        );
+        let long_name = "A".repeat(120);
+        let props = format_source_properties(Some(&long_name));
+        assert!(props.contains(&format!("'{} (NectarLink)'", "A".repeat(64))));
+
+        assert_eq!(
+            format_file_arg(Path::new("/run/user/1000/nectarlink-vmic.pcm")).unwrap(),
+            "file=\"/run/user/1000/nectarlink-vmic.pcm\""
+        );
+        assert!(format_file_arg(Path::new("/tmp/bad\"quote.pcm")).is_err());
+        assert!(format_file_arg(Path::new("/tmp/bad'quote.pcm")).is_err());
+        assert!(format_file_arg(Path::new("/tmp/bad\\slash.pcm")).is_err());
+    }
+
+    #[test]
+    fn default_fifo_path_never_uses_shared_tmp_root() {
+        let path = default_fifo_path();
+        assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("nectarlink-vmic.pcm"));
+        assert_ne!(
+            path.parent(),
+            Some(Path::new("/tmp")),
+            "FIFO must not be placed directly in world-writable /tmp: {}",
+            path.display()
+        );
     }
 }

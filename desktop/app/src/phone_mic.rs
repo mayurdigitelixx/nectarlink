@@ -124,7 +124,13 @@ pub fn chosen_output() -> Option<String> {
 }
 
 /// Names that virtual audio cables give their playback end.
-const CABLES: &[&str] = &["cable input", "vb-audio", "voicemeeter input", "virtual cable"];
+const CABLES: &[&str] =
+    &["cable input", "vb-audio", "voicemeeter input", "virtual cable", "virtual microphone"];
+
+#[cfg(target_os = "linux")]
+pub const VIRTUAL_MIC_ID: &str = "nectarlink:virtual_mic";
+#[cfg(target_os = "linux")]
+pub const VIRTUAL_MIC_NAME: &str = "NectarLink Phone Mic (Virtual Microphone)";
 
 /// The output to play into: the one chosen, while it's there; else a
 /// virtual audio cable, if there is one; else `None` (the default output).
@@ -145,7 +151,15 @@ pub fn is_cable(name: &str) -> bool {
 
 /// The output devices, and the one the microphone plays into.
 pub fn outputs() -> (Vec<AudioOutputDevice>, Option<String>) {
-    let devices = crate::win::audio::output_devices();
+    #[allow(unused_mut)]
+    let mut devices = crate::win::audio::output_devices();
+    #[cfg(target_os = "linux")]
+    if !devices.iter().any(|d| d.id == VIRTUAL_MIC_ID) {
+        devices.insert(
+            0,
+            AudioOutputDevice { id: VIRTUAL_MIC_ID.into(), name: VIRTUAL_MIC_NAME.into(), is_default: false },
+        );
+    }
     let chosen = OUTPUT.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let output = preferred(&devices, chosen.as_deref())
         .or_else(|| devices.iter().find(|d| d.is_default).map(|d| d.id.clone()));
@@ -154,7 +168,13 @@ pub fn outputs() -> (Vec<AudioOutputDevice>, Option<String>) {
 
 /// Plays the microphone into this output from now on (and the next time).
 pub fn set_output(id: String) {
-    *OUTPUT.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.clone());
+    {
+        let mut current = OUTPUT.lock().unwrap_or_else(|e| e.into_inner());
+        if current.as_deref() == Some(id.as_str()) {
+            return;
+        }
+        *current = Some(id.clone());
+    }
     save(|s| s.phone_mic_output = Some(id));
     // Already playing: move there now rather than on the next start.
     if let Some(sink) = ACTIVE.lock().unwrap_or_else(|e| e.into_inner()).upgrade() {
@@ -246,16 +266,28 @@ fn after(phase: Phase, event: &NodeEvent) -> Phase {
 }
 
 /// Where a phone's microphone goes: [`Platform::mic_sink`](nectarlink_core::Platform::mic_sink).
-pub fn sink(_peer: &DeviceId) -> Option<Arc<dyn MicSink>> {
-    let sink = Arc::new(Sink { player: Mutex::new(None), config: Mutex::new(None) });
+pub fn sink(peer: &DeviceId) -> Option<Arc<dyn MicSink>> {
+    let sink = Arc::new(Sink {
+        #[cfg(target_os = "linux")]
+        peer: *peer,
+        player: Mutex::new(None),
+        config: Mutex::new(None),
+        #[cfg(target_os = "linux")]
+        vmic: Mutex::new(None),
+    });
+    let _ = peer;
     *ACTIVE.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(&sink);
     Some(sink)
 }
 
 struct Sink {
+    #[cfg(target_os = "linux")]
+    peer: DeviceId,
     player: Mutex<Option<Player>>,
     /// The stream's format, to start again on another output.
     config: Mutex<Option<MirrorAudioConfig>>,
+    #[cfg(target_os = "linux")]
+    vmic: Mutex<Option<crate::win::vmic::VirtualMic>>,
 }
 
 impl Sink {
@@ -263,6 +295,20 @@ impl Sink {
     fn restart(&self) {
         let Some(config) = self.config.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return };
         let (_, output) = outputs();
+        #[cfg(target_os = "linux")]
+        if output.as_deref() == Some(VIRTUAL_MIC_ID) {
+            self.player.lock().unwrap_or_else(|e| e.into_inner()).take();
+            let phone_name = core_host::host().hub.read(|s| s.name_of(&self.peer));
+            let vmic = crate::win::vmic::VirtualMic::new_for_phone(
+                config.rate,
+                config.channels,
+                phone_name.as_deref(),
+            );
+            *self.vmic.lock().unwrap_or_else(|e| e.into_inner()) = Some(vmic);
+            return;
+        }
+        #[cfg(target_os = "linux")]
+        self.vmic.lock().unwrap_or_else(|e| e.into_inner()).take();
         match Player::start_on(output, config.rate, u16::from(config.channels)) {
             Ok(player) => *self.player.lock().unwrap_or_else(|e| e.into_inner()) = Some(player),
             Err(e) => tracing::warn!(error = %e, "can't play the phone's microphone"),
@@ -277,6 +323,12 @@ impl MicSink for Sink {
     }
 
     fn audio(&self, _time_us: u64, mut data: Vec<u8>) {
+        #[cfg(target_os = "linux")]
+        if let Some(vmic) = self.vmic.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            amplify(&mut data, gain());
+            let _ = vmic.write_pcm_s16le(&data);
+            return;
+        }
         if let Some(player) = self.player.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             amplify(&mut data, gain());
             player.push(data);
@@ -284,6 +336,9 @@ impl MicSink for Sink {
     }
 
     fn ended(&self) {
+        *self.config.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        #[cfg(target_os = "linux")]
+        self.vmic.lock().unwrap_or_else(|e| e.into_inner()).take();
         self.player.lock().unwrap_or_else(|e| e.into_inner()).take();
     }
 }
@@ -353,5 +408,16 @@ mod tests {
     #[test]
     fn without_a_cable_it_is_the_default_output() {
         assert_eq!(preferred(&[device("spk", "Speakers", true)], None), None);
+    }
+
+    #[test]
+    fn virtual_microphone_is_recognized_as_preferred_cable() {
+        let devices = [
+            device("nectarlink:virtual_mic", "NectarLink Phone Mic (Virtual Microphone)", false),
+            device("spk", "Speakers", true),
+        ];
+        assert!(is_cable("NectarLink Phone Mic (Virtual Microphone)"));
+        assert_eq!(preferred(&devices, None).as_deref(), Some("nectarlink:virtual_mic"));
+        assert_eq!(preferred(&devices, Some("spk")).as_deref(), Some("spk"));
     }
 }
