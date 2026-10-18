@@ -129,6 +129,34 @@ jobs:
           path: target/package/*-setup.exe
           retention-days: 14
 
+  desktop-linux:
+    name: Linux app (x64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgl1-mesa-dev libxkbcommon-dev libvulkan-dev
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: linux
+          target: desktop
+          arch: linux_gcc_64
+          cache: true
+          aqtsource: git+https://github.com/miurahr/aqtinstall.git
+      - name: Clippy
+        run: cargo clippy --locked -p nectarlink-desktop -p nectarlink-vcam -p s1-qt-rust --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --locked -p nectarlink-desktop -p nectarlink-vcam
+      - name: Release build
+        run: cargo build --locked --release -p nectarlink-desktop -p nectarlink-vcam
+
   android:
     name: Android app
     runs-on: ubuntu-latest

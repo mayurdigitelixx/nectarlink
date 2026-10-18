@@ -237,6 +237,101 @@ END
     embed_resource::compile(&rc_path, embed_resource::NONE).manifest_required().expect("compile resources");
 }
 
+fn find_lrelease() -> Option<PathBuf> {
+    if let Ok(custom) = std::env::var("LRELEASE") {
+        let p = PathBuf::from(custom);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    if let Some(qmake) = std::env::var_os("QMAKE").map(PathBuf::from)
+        && let Some(bin_dir) = qmake.parent()
+    {
+        for name in ["lrelease", "lrelease.exe", "lrelease-qt6"] {
+            let candidate = bin_dir.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    for candidate in [
+        "/usr/lib/qt6/bin/lrelease",
+        "/usr/lib64/qt6/bin/lrelease",
+        "/usr/bin/lrelease-qt6",
+        "/usr/bin/lrelease",
+    ] {
+        let p = PathBuf::from(candidate);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        let sysroot_bin = Path::new(&manifest_dir).join("../../.qt6-sysroot/usr/lib/qt6/bin/lrelease");
+        if sysroot_bin.is_file() {
+            return Some(sysroot_bin);
+        }
+    }
+    None
+}
+
+fn compile_translations() {
+    let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") else {
+        return;
+    };
+    let i18n_dir = Path::new(&manifest_dir).join("i18n");
+    println!("cargo:rerun-if-changed={}", i18n_dir.display());
+    let Ok(entries) = fs::read_dir(&i18n_dir) else {
+        return;
+    };
+    let ts_files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("ts"))
+        .collect();
+    for ts in &ts_files {
+        println!("cargo:rerun-if-changed={}", ts.display());
+    }
+    if ts_files.is_empty() {
+        return;
+    }
+    let Some(lrelease) = find_lrelease() else {
+        println!(
+            "cargo:warning=lrelease not found; skipping .qm compilation (install qt6-l10n-tools or set LRELEASE)"
+        );
+        return;
+    };
+    let Ok(out_dir) = std::env::var("OUT_DIR") else {
+        return;
+    };
+    let out_path = PathBuf::from(out_dir);
+    let profile_dir = out_path.ancestors().nth(3).map(Path::to_path_buf);
+    let sysroot_lib = Path::new(&manifest_dir).join("../../.qt6-sysroot/usr/lib/x86_64-linux-gnu");
+
+    for ts in ts_files {
+        let Some(stem) = ts.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let qm_name = format!("{stem}.qm");
+        let out_qm = out_path.join(&qm_name);
+        let mut cmd = std::process::Command::new(&lrelease);
+        if sysroot_lib.is_dir() {
+            let mut ld_path = sysroot_lib.display().to_string();
+            if let Ok(existing) = std::env::var("LD_LIBRARY_PATH")
+                && !existing.is_empty()
+            {
+                ld_path.push(':');
+                ld_path.push_str(&existing);
+            }
+            cmd.env("LD_LIBRARY_PATH", ld_path);
+        }
+        let compiled =
+            cmd.arg("-silent").arg(&ts).arg("-qm").arg(&out_qm).status().is_ok_and(|s| s.success());
+        if compiled && let Some(ref target_dir) = profile_dir {
+            let _ = fs::copy(&out_qm, target_dir.join(&qm_name));
+        }
+    }
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=src/mark.rs");
     for qml in QML.iter().chain(QML_SINGLETONS.iter()) {
@@ -245,6 +340,7 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         windows_resources();
     }
+    compile_translations();
     let module = QmlModule::new("app.nectarlink")
         .qml_files(QML.iter().map(|f| QmlFile::from(*f)))
         .qml_files(QML_SINGLETONS.iter().map(|f| QmlFile::from(*f).singleton(true)));
@@ -282,8 +378,28 @@ fn main() {
         .build();
 
     // The C++ window code calls DWM, Shell property store, and user32 directly.
-    println!("cargo:rustc-link-lib=dwmapi");
-    println!("cargo:rustc-link-lib=ole32");
-    println!("cargo:rustc-link-lib=shell32");
-    println!("cargo:rustc-link-lib=user32");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        println!("cargo:rustc-link-lib=dwmapi");
+        println!("cargo:rustc-link-lib=ole32");
+        println!("cargo:rustc-link-lib=shell32");
+        println!("cargo:rustc-link-lib=user32");
+    } else if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux")
+        && let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR")
+    {
+        println!("cargo:rustc-link-arg=-fuse-ld=bfd");
+        println!("cargo:rustc-link-lib=Qt6Quick");
+        let sysroot_lib =
+            std::path::Path::new(&manifest_dir).join("../../.qt6-sysroot/usr/lib/x86_64-linux-gnu");
+        if let Ok(canon) = sysroot_lib.canonicalize() {
+            println!("cargo:rustc-link-search=native={}", canon.display());
+            println!("cargo:rustc-link-arg=-Wl,--disable-new-dtags");
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", canon.display());
+        }
+    }
+    println!("cargo:rerun-if-changed=cpp/app_helpers.h");
+    println!("cargo:rerun-if-changed=cpp/app_helpers.cpp");
+    println!("cargo:rerun-if-changed=cpp/native_window.h");
+    println!("cargo:rerun-if-changed=cpp/native_window.cpp");
+    println!("cargo:rerun-if-changed=cpp/video_view.h");
+    println!("cargo:rerun-if-changed=cpp/video_view.cpp");
 }

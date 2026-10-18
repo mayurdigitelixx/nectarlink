@@ -321,7 +321,14 @@ fn execute_action(action: &DeckAction) -> Result<(), String> {
             Ok(())
         }
         DeckAction::Screenshot => {
-            win::input::press_key("s", &[KeyMod::Win, KeyMod::Shift]);
+            #[cfg(target_os = "linux")]
+            {
+                let _ = win::shell::take_screenshot();
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                win::input::press_key("s", &[KeyMod::Win, KeyMod::Shift]);
+            }
             Ok(())
         }
         DeckAction::Shortcut { key, mods } => {
@@ -512,7 +519,13 @@ pub fn build_action(
     };
     if !action.is_valid() {
         return Err(match kind {
-            deck_kinds::LAUNCH_APP => tr!("Deck", "Application path must end with .exe or .lnk."),
+            deck_kinds::LAUNCH_APP => {
+                if cfg!(target_os = "linux") {
+                    tr!("Deck", "Enter an application path (/usr/bin/..., .desktop, or .AppImage).")
+                } else {
+                    tr!("Deck", "Application path must end with .exe or .lnk.")
+                }
+            }
             deck_kinds::OPEN_URL => tr!("Deck", "Web address must start with http:// or https://."),
             deck_kinds::SHORTCUT => {
                 tr!("Deck", "Use a single key (a-z, 0-9, f1-f12, enter, tab, space, escape, arrows, etc.).")
@@ -616,6 +629,12 @@ mod tests {
                 .unwrap();
         assert_eq!(app, DeckAction::LaunchApp { path: "C:\\Windows\\System32\\calc.exe".into() });
         assert!(build_action("launch_app", "C:\\script.bat", false, false, false, false).is_err());
+
+        let linux_bin = build_action("launch_app", "/usr/bin/firefox", false, false, false, false).unwrap();
+        assert_eq!(linux_bin, DeckAction::LaunchApp { path: "/usr/bin/firefox".into() });
+        let linux_desktop =
+            build_action("launch_app", "org.mozilla.firefox.desktop", false, false, false, false).unwrap();
+        assert_eq!(linux_desktop, DeckAction::LaunchApp { path: "org.mozilla.firefox.desktop".into() });
 
         let cmd = build_action("run_command", "  echo hello  ", false, false, false, false).unwrap();
         assert_eq!(cmd, DeckAction::RunCommand { command: "echo hello".into() });

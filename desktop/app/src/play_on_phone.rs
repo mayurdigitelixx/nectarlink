@@ -16,11 +16,14 @@ use std::{
 };
 
 use nectarlink_core::{DeviceId, Error, FeatureState, LinkState, MediaAction, PlayOnPhone};
+#[cfg(windows)]
 use windows::Win32::{
     Foundation::{HWND, RECT},
     System::Com::{COINIT_MULTITHREADED, CoInitializeEx},
 };
 
+#[cfg(target_os = "linux")]
+use crate::win::browser::{HWND, RECT};
 use crate::{
     bridge::app::{describe, show_message},
     core_host,
@@ -142,6 +145,7 @@ pub fn play(player: String) {
         return show_message(tr!("PlayOnPhone", "Connect your phone to play on it."));
     };
     let spawned = std::thread::Builder::new().name("play-on-phone".into()).spawn(move || {
+        #[cfg(windows)]
         // SAFETY: COM for this short-lived thread (UI Automation).
         let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
         let (title, position) = now_playing(&player);
@@ -265,6 +269,7 @@ impl Watched {
         let stop = Arc::new(AtomicBool::new(false));
         let (found, stopped, player) = (place.clone(), stop.clone(), player.to_owned());
         let spawned = std::thread::Builder::new().name("play-on-phone-follow".into()).spawn(move || {
+            #[cfg(windows)]
             // SAFETY: COM for this thread, which ends with the watching.
             let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
             // Places in the pixels the capture uses.

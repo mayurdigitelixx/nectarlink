@@ -170,6 +170,7 @@ static const char *const nectarlink_rust_strings[] = {
     QT_TRANSLATE_NOOP("Deck", "Choose a key for the shortcut."), // desktop/app/src/deck.rs
     QT_TRANSLATE_NOOP("Deck", "Choose an application (.exe or .lnk) on this PC."), // desktop/app/src/deck.rs
     QT_TRANSLATE_NOOP("Deck", "Enter a command to run on this PC."), // desktop/app/src/deck.rs
+    QT_TRANSLATE_NOOP("Deck", "Enter an application path (/usr/bin/..., .desktop, or .AppImage)."), // desktop/app/src/deck.rs
     QT_TRANSLATE_NOOP("Deck", "Enter an http:// or https:// web address."), // desktop/app/src/deck.rs
     QT_TRANSLATE_NOOP("Deck", "Enter the text snippet to type."), // desktop/app/src/deck.rs
     QT_TRANSLATE_NOOP("Deck", "Invalid action configuration."), // desktop/app/src/deck.rs

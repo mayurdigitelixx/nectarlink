@@ -15,6 +15,7 @@ use std::{
 };
 
 use nectarlink_core::{RecordingMarker, Transfer, TransferState};
+#[cfg(windows)]
 use windows::{
     Win32::{
         Media::MediaFoundation::{
@@ -31,14 +32,13 @@ use windows::{
     core::{HSTRING, Interface},
 };
 
+#[cfg(windows)]
+use crate::win::h264::ensure_mf_started;
 use crate::{
     core_host,
     settings::{RecordingFormat, Settings},
     transfers::{ACTION_OPEN, ACTION_SHOW, TOAST_GROUP},
-    win::{
-        h264::ensure_mf_started,
-        toast::{self, Toast},
-    },
+    win::toast::{self, Toast},
 };
 
 #[derive(Debug, Default)]
@@ -109,10 +109,29 @@ pub fn format_recording_stem(year: u16, month: u16, day: u16, hour: u16, minute:
 }
 
 /// Base name for a recording saved right now, in local time.
+#[cfg(windows)]
 pub fn current_recording_stem() -> String {
     // SAFETY: GetLocalTime always succeeds and writes a SYSTEMTIME struct.
     let st = unsafe { GetLocalTime() };
     format_recording_stem(st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute)
+}
+
+/// Base name for a recording saved right now, in local time.
+#[cfg(target_os = "linux")]
+pub fn current_recording_stem() -> String {
+    // SAFETY: time(NULL) and localtime_r with valid stack structs.
+    unsafe {
+        let now = libc::time(std::ptr::null_mut());
+        let mut tm: libc::tm = std::mem::zeroed();
+        libc::localtime_r(&now, &mut tm);
+        format_recording_stem(
+            (tm.tm_year + 1900).max(1970) as u16,
+            (tm.tm_mon + 1).clamp(1, 12) as u16,
+            tm.tm_mday.clamp(1, 31) as u16,
+            tm.tm_hour.clamp(0, 23) as u16,
+            tm.tm_min.clamp(0, 59) as u16,
+        )
+    }
 }
 
 /// The name the phone gave a recording (`Recording 2026-10-07 14.32`, from
@@ -248,6 +267,7 @@ fn move_file(src: &Path, dest: &Path) -> std::io::Result<()> {
 
 /// Converts `src` (`.m4a`) to `dest` in `format` (`Mp3`, `Wav`, or `Flac`)
 /// using Windows Media Foundation.
+#[cfg(windows)]
 pub fn convert_audio(src: &Path, dest: &Path, format: RecordingFormat) -> windows::core::Result<()> {
     ensure_mf_started()?;
     let stream_idx = MF_SOURCE_READER_FIRST_AUDIO_STREAM.0 as u32;
@@ -285,6 +305,34 @@ pub fn convert_audio(src: &Path, dest: &Path, format: RecordingFormat) -> window
     }
 }
 
+/// Converts `src` (`.m4a`) to `dest` in `format` (`Mp3`, `Wav`, or `Flac`)
+/// using `ffmpeg` on Linux.
+#[cfg(target_os = "linux")]
+pub fn convert_audio(src: &Path, dest: &Path, format: RecordingFormat) -> std::io::Result<()> {
+    match format {
+        RecordingFormat::M4a => {
+            fs::copy(src, dest)?;
+            Ok(())
+        }
+        RecordingFormat::Wav | RecordingFormat::Mp3 | RecordingFormat::Flac => {
+            let status = std::process::Command::new("ffmpeg")
+                .args(["-v", "error", "-y", "-i"])
+                .arg(src)
+                .arg(dest)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(std::io::Error::other(format!("ffmpeg exited with {status}")))
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
 unsafe fn write_decoded_wav(
     reader: &IMFSourceReader,
     stream_idx: u32,
@@ -340,6 +388,7 @@ unsafe fn write_decoded_wav(
     fs::write(dest, wav).map_err(|_| windows::core::Error::from_thread())
 }
 
+#[cfg(windows)]
 unsafe fn transcode_with_sink_writer(
     reader: &IMFSourceReader,
     stream_idx: u32,
@@ -390,6 +439,7 @@ unsafe fn transcode_with_sink_writer(
     Ok(())
 }
 
+#[cfg(windows)]
 unsafe fn choose_encoder_output_type(
     subtype: &windows::core::GUID,
     sample_rate: u32,
