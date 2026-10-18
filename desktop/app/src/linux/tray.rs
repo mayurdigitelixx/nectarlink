@@ -11,9 +11,10 @@ use std::{
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::JoinHandle,
+    time::{Duration, Instant},
 };
 
 /// What the user or the system asked for.
@@ -58,6 +59,7 @@ static LAST_EXTERNAL_WINDOW: Mutex<Option<(isize, String)>> = Mutex::new(None);
 static WINDOW_ID_MAP: OnceLock<Mutex<HashMap<isize, String>>> = OnceLock::new();
 static HOTKEY_SPECS: Mutex<(String, String, String, String)> =
     Mutex::new((String::new(), String::new(), String::new(), String::new()));
+static HOTKEY_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 fn window_id_map() -> &'static Mutex<HashMap<isize, String>> {
     WINDOW_ID_MAP.get_or_init(|| Mutex::new(HashMap::new()))
@@ -376,6 +378,264 @@ pub fn update_hotkeys(photo_spec: &str, scan_spec: &str, palette_spec: &str, she
         palette_spec.trim().to_owned(),
         shelf_spec.trim().to_owned(),
     );
+    drop(specs);
+    HOTKEY_GENERATION.fetch_add(1, Ordering::Release);
+}
+
+const X11_SHIFT_MASK: u32 = 1 << 0;
+const X11_LOCK_MASK: u32 = 1 << 1;
+const X11_CONTROL_MASK: u32 = 1 << 2;
+const X11_MOD1_MASK: u32 = 1 << 3;
+const X11_MOD2_MASK: u32 = 1 << 4;
+const X11_MOD4_MASK: u32 = 1 << 6;
+const X11_CLEAN_MOD_MASK: u32 = X11_SHIFT_MASK | X11_CONTROL_MASK | X11_MOD1_MASK | X11_MOD4_MASK;
+
+/// Converts `MOD_*` flags from [`parse_hotkey`] into an X11 modifier state mask.
+pub(crate) fn mods_to_x11_mask(mods: u32) -> u32 {
+    let mut mask = 0u32;
+    if (mods & MOD_SHIFT) != 0 {
+        mask |= X11_SHIFT_MASK;
+    }
+    if (mods & MOD_CONTROL) != 0 {
+        mask |= X11_CONTROL_MASK;
+    }
+    if (mods & MOD_ALT) != 0 {
+        mask |= X11_MOD1_MASK;
+    }
+    if (mods & MOD_WIN) != 0 {
+        mask |= X11_MOD4_MASK;
+    }
+    mask
+}
+
+/// Converts a virtual key code from [`parse_hotkey`] into an X11 `KeySym` (`<X11/keysymdef.h>`).
+pub(crate) fn vk_to_x11_keysym(vk: u32) -> Option<libc::c_ulong> {
+    let keysym: u64 = match vk {
+        0x20 => 0x0020,                               // XK_space
+        0x09 => 0xFF09,                               // XK_Tab
+        0x0D => 0xFF0D,                               // XK_Return
+        0x1B => 0xFF1B,                               // XK_Escape
+        0x2D => 0xFF63,                               // XK_Insert
+        0x2E => 0xFFFF,                               // XK_Delete
+        0x24 => 0xFF50,                               // XK_Home
+        0x23 => 0xFF57,                               // XK_End
+        0x21 => 0xFF55,                               // XK_Prior (PageUp)
+        0x22 => 0xFF56,                               // XK_Next (PageDown)
+        0x25 => 0xFF51,                               // XK_Left
+        0x26 => 0xFF52,                               // XK_Up
+        0x27 => 0xFF53,                               // XK_Right
+        0x28 => 0xFF54,                               // XK_Down
+        0xBB => 0x003D,                               // XK_equal ('+'/'=' key)
+        0xBD => 0x002D,                               // XK_minus
+        0xBC => 0x002C,                               // XK_comma
+        0xBE => 0x002E,                               // XK_period
+        0x30..=0x39 => u64::from(vk),                 // XK_0..=XK_9
+        0x41..=0x5A => u64::from(vk + 32),            // XK_a..=XK_z
+        0x70..=0x7B => 0xFFBE + u64::from(vk - 0x70), // XK_F1..=XK_F12
+        _ => return None,
+    };
+    Some(keysym as libc::c_ulong)
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct XKeyEvent {
+    event_type: libc::c_int,
+    serial: libc::c_ulong,
+    send_event: libc::c_int,
+    display: *mut libc::c_void,
+    window: libc::c_ulong,
+    root: libc::c_ulong,
+    subwindow: libc::c_ulong,
+    time: libc::c_ulong,
+    x: libc::c_int,
+    y: libc::c_int,
+    x_root: libc::c_int,
+    y_root: libc::c_int,
+    state: libc::c_uint,
+    keycode: libc::c_uint,
+    same_screen: libc::c_int,
+}
+
+#[repr(C)]
+union XEvent {
+    event_type: libc::c_int,
+    xkey: XKeyEvent,
+    pad: [libc::c_long; 24],
+}
+
+unsafe extern "C" fn ignore_x11_error(_dpy: *mut libc::c_void, _err: *mut libc::c_void) -> libc::c_int {
+    0
+}
+
+fn spawn_x11_hotkey_thread(stop: Arc<AtomicBool>, handler: Arc<SharedHandler>) -> Option<JoinHandle<()>> {
+    if !has_x11_display() {
+        return None;
+    }
+    std::thread::Builder::new()
+        .name("tray-x11-hotkeys".into())
+        .spawn(move || {
+            // SAFETY: Dynamically loads libX11.so.6 and resolves standard Xlib symbols.
+            unsafe {
+                let lib = libc::dlopen(c"libX11.so.6".as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL);
+                if lib.is_null() {
+                    tracing::debug!("libX11.so.6 not available for global hotkeys");
+                    return;
+                }
+
+                type FnXOpenDisplay = unsafe extern "C" fn(*const libc::c_char) -> *mut libc::c_void;
+                type FnXCloseDisplay = unsafe extern "C" fn(*mut libc::c_void) -> libc::c_int;
+                type FnXDefaultRootWindow = unsafe extern "C" fn(*mut libc::c_void) -> libc::c_ulong;
+                type FnXKeysymToKeycode =
+                    unsafe extern "C" fn(*mut libc::c_void, libc::c_ulong) -> libc::c_uchar;
+                type FnXGrabKey = unsafe extern "C" fn(
+                    *mut libc::c_void,
+                    libc::c_int,
+                    libc::c_uint,
+                    libc::c_ulong,
+                    libc::c_int,
+                    libc::c_int,
+                    libc::c_int,
+                ) -> libc::c_int;
+                type FnXUngrabKey = unsafe extern "C" fn(
+                    *mut libc::c_void,
+                    libc::c_int,
+                    libc::c_uint,
+                    libc::c_ulong,
+                ) -> libc::c_int;
+                type FnXPending = unsafe extern "C" fn(*mut libc::c_void) -> libc::c_int;
+                type FnXNextEvent = unsafe extern "C" fn(*mut libc::c_void, *mut XEvent) -> libc::c_int;
+                type FnXSync = unsafe extern "C" fn(*mut libc::c_void, libc::c_int) -> libc::c_int;
+                type FnXConnectionNumber = unsafe extern "C" fn(*mut libc::c_void) -> libc::c_int;
+                type XErrorHandler =
+                    Option<unsafe extern "C" fn(*mut libc::c_void, *mut libc::c_void) -> libc::c_int>;
+                type FnXSetErrorHandler = unsafe extern "C" fn(XErrorHandler) -> XErrorHandler;
+
+                macro_rules! sym {
+                    ($name:literal, $ty:ty) => {{
+                        let ptr = libc::dlsym(lib, $name.as_ptr());
+                        if ptr.is_null() {
+                            return;
+                        }
+                        std::mem::transmute::<*mut libc::c_void, $ty>(ptr)
+                    }};
+                }
+
+                let x_open_display = sym!(c"XOpenDisplay", FnXOpenDisplay);
+                let x_close_display = sym!(c"XCloseDisplay", FnXCloseDisplay);
+                let x_default_root_window = sym!(c"XDefaultRootWindow", FnXDefaultRootWindow);
+                let x_keysym_to_keycode = sym!(c"XKeysymToKeycode", FnXKeysymToKeycode);
+                let x_grab_key = sym!(c"XGrabKey", FnXGrabKey);
+                let x_ungrab_key = sym!(c"XUngrabKey", FnXUngrabKey);
+                let x_pending = sym!(c"XPending", FnXPending);
+                let x_next_event = sym!(c"XNextEvent", FnXNextEvent);
+                let x_sync = sym!(c"XSync", FnXSync);
+                let x_connection_number = sym!(c"XConnectionNumber", FnXConnectionNumber);
+                let x_set_error_handler = sym!(c"XSetErrorHandler", FnXSetErrorHandler);
+
+                let _ = x_set_error_handler(Some(ignore_x11_error));
+                let dpy = x_open_display(std::ptr::null());
+                if dpy.is_null() {
+                    tracing::debug!("XOpenDisplay failed for global hotkeys");
+                    return;
+                }
+                let root = x_default_root_window(dpy);
+                let fd = x_connection_number(dpy);
+
+                const KEY_PRESS: libc::c_int = 2;
+                const GRAB_MODE_ASYNC: libc::c_int = 1;
+                const LOCK_COMBOS: [u32; 4] =
+                    [0, X11_LOCK_MASK, X11_MOD2_MASK, X11_LOCK_MASK | X11_MOD2_MASK];
+
+                let mut applied_gen: u64 = 0;
+                // (x11_clean_mods, keycode, TrayEvent)
+                let mut grabbed: Vec<(u32, u32, TrayEvent)> = Vec::new();
+                let mut last_fired: Option<(TrayEvent, Instant)> = None;
+
+                while !stop.load(Ordering::Acquire) {
+                    let current_gen = HOTKEY_GENERATION.load(Ordering::Acquire);
+                    if current_gen != applied_gen {
+                        for &(mods, keycode, _) in &grabbed {
+                            for extra in LOCK_COMBOS {
+                                let _ = x_ungrab_key(dpy, keycode as libc::c_int, mods | extra, root);
+                            }
+                        }
+                        grabbed.clear();
+
+                        let (photo, scan, palette, shelf) =
+                            HOTKEY_SPECS.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                        let targets = [
+                            (photo.as_str(), TrayEvent::TakePhoto),
+                            (scan.as_str(), TrayEvent::ScanDocument),
+                            (palette.as_str(), TrayEvent::CommandPalette),
+                            (shelf.as_str(), TrayEvent::Shelf),
+                        ];
+
+                        for (spec, ev) in targets {
+                            let Some((mods, vk)) = parse_hotkey(spec) else { continue };
+                            let Some(keysym) = vk_to_x11_keysym(vk) else { continue };
+                            let keycode = u32::from(x_keysym_to_keycode(dpy, keysym));
+                            if keycode == 0 {
+                                continue;
+                            }
+                            let x11_mods = mods_to_x11_mask(mods);
+                            if x11_mods == 0 {
+                                continue;
+                            }
+                            for extra in LOCK_COMBOS {
+                                let _ = x_grab_key(
+                                    dpy,
+                                    keycode as libc::c_int,
+                                    x11_mods | extra,
+                                    root,
+                                    1, // owner_events = True
+                                    GRAB_MODE_ASYNC,
+                                    GRAB_MODE_ASYNC,
+                                );
+                            }
+                            grabbed.push((x11_mods, keycode, ev));
+                        }
+                        let _ = x_sync(dpy, 0);
+                        applied_gen = current_gen;
+                    }
+
+                    while x_pending(dpy) > 0 {
+                        let mut event: XEvent = std::mem::zeroed();
+                        let _ = x_next_event(dpy, &mut event);
+                        if event.event_type == KEY_PRESS {
+                            let clean_mods = event.xkey.state & X11_CLEAN_MOD_MASK;
+                            let keycode = event.xkey.keycode;
+                            if let Some(&(_, _, tray_ev)) =
+                                grabbed.iter().find(|&&(m, kc, _)| m == clean_mods && kc == keycode)
+                            {
+                                let now = Instant::now();
+                                let debounced = last_fired.is_some_and(|(prev_ev, prev_t)| {
+                                    prev_ev == tray_ev
+                                        && now.saturating_duration_since(prev_t) < Duration::from_millis(220)
+                                });
+                                if !debounced {
+                                    last_fired = Some((tray_ev, now));
+                                    record_foreground_window();
+                                    handler.emit(tray_ev);
+                                }
+                            }
+                        }
+                    }
+
+                    let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+                    let _ = libc::poll(&mut pfd, 1, 150);
+                }
+
+                for &(mods, keycode, _) in &grabbed {
+                    for extra in LOCK_COMBOS {
+                        let _ = x_ungrab_key(dpy, keycode as libc::c_int, mods | extra, root);
+                    }
+                }
+                let _ = x_sync(dpy, 0);
+                let _ = x_close_display(dpy);
+            }
+        })
+        .ok()
 }
 
 /// Returns true when a line from `gdbus monitor` or `dbus-monitor` indicates
@@ -783,6 +1043,10 @@ impl Tray {
             }
         }
 
+        if let Some(handle) = spawn_x11_hotkey_thread(Arc::clone(&stop), Arc::clone(&shared_handler)) {
+            threads.push(handle);
+        }
+
         let _ = spawn_dbus_monitor_reader;
 
         Ok(Tray {
@@ -980,5 +1244,28 @@ mod tests {
         assert_eq!(parse_tray_helper_action("OPEN_LINK"), Some(TrayEvent::OpenLinkOnPhone));
         assert_eq!(parse_tray_helper_action("QUIT"), Some(TrayEvent::Quit));
         assert_eq!(parse_tray_helper_action("UNKNOWN"), None);
+    }
+
+    #[test]
+    fn x11_hotkey_mapping_covers_modifiers_and_virtual_keys() {
+        let (mods, vk) = parse_hotkey("Ctrl+Alt+Space").expect("Ctrl+Alt+Space");
+        assert_eq!(mods_to_x11_mask(mods), X11_CONTROL_MASK | X11_MOD1_MASK);
+        assert_eq!(vk_to_x11_keysym(vk), Some(0x0020));
+
+        let (mods, vk) = parse_hotkey("Super+Shift+C").expect("Super+Shift+C");
+        assert_eq!(mods_to_x11_mask(mods), X11_MOD4_MASK | X11_SHIFT_MASK);
+        assert_eq!(vk_to_x11_keysym(vk), Some(u64::from(b'c')));
+
+        let (_, vk_f1) = parse_hotkey("Ctrl+F1").expect("Ctrl+F1");
+        assert_eq!(vk_to_x11_keysym(vk_f1), Some(0xFFBE));
+        let (_, vk_f12) = parse_hotkey("Ctrl+F12").expect("Ctrl+F12");
+        assert_eq!(vk_to_x11_keysym(vk_f12), Some(0xFFBE + 11));
+        assert_eq!(vk_to_x11_keysym(0x0D), Some(0xFF0D));
+        assert_eq!(vk_to_x11_keysym(0x1B), Some(0xFF1B));
+        assert_eq!(vk_to_x11_keysym(0xFFFF), None);
+
+        let before = HOTKEY_GENERATION.load(Ordering::Acquire);
+        update_hotkeys("Ctrl+Alt+C", "Ctrl+Alt+D", "Ctrl+Alt+Space", "Ctrl+Alt+S");
+        assert!(HOTKEY_GENERATION.load(Ordering::Acquire) > before);
     }
 }

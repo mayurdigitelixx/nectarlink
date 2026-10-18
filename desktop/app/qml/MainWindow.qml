@@ -1006,7 +1006,13 @@ NativeWindow {
     }
 
     Shortcut {
-        sequences: ["Ctrl+K", "Ctrl+P"]
+        sequences: {
+            var seqs = ["Ctrl+K", "Ctrl+P"]
+            var custom = Preferences.commandPaletteHotkey ? Preferences.commandPaletteHotkey.trim() : ""
+            if (custom.length > 0 && custom.toLowerCase() !== "none" && seqs.indexOf(custom) === -1)
+                seqs.push(custom)
+            return seqs
+        }
         onActivated: {
             if (AppController.commandPaletteOpen)
                 AppController.closeCommandPalette()

@@ -18,6 +18,8 @@
 #else
 #include <QtGui/QCursor>
 #include <QtGui/QMouseEvent>
+#include <cstring>
+#include <dlfcn.h>
 #endif
 
 namespace {
@@ -57,6 +59,77 @@ void trimD3DResources(QQuickWindow *window)
 #else
 void trimD3DResources(QQuickWindow *)
 {
+}
+
+void activateX11Window(WId winId)
+{
+    if (!winId || qEnvironmentVariableIsEmpty("DISPLAY"))
+        return;
+
+    void *lib = dlopen("libX11.so.6", RTLD_LAZY | RTLD_LOCAL);
+    if (!lib)
+        return;
+
+    using XOpenDisplayFn = void *(*)(const char *);
+    using XCloseDisplayFn = int (*)(void *);
+    using XDefaultRootWindowFn = unsigned long (*)(void *);
+    using XInternAtomFn = unsigned long (*)(void *, const char *, int);
+    using XSendEventFn = int (*)(void *, unsigned long, int, long, void *);
+    using XMapRaisedFn = int (*)(void *, unsigned long);
+    using XSetInputFocusFn = int (*)(void *, unsigned long, int, unsigned long);
+    using XFlushFn = int (*)(void *);
+
+    auto xOpenDisplay = reinterpret_cast<XOpenDisplayFn>(dlsym(lib, "XOpenDisplay"));
+    auto xCloseDisplay = reinterpret_cast<XCloseDisplayFn>(dlsym(lib, "XCloseDisplay"));
+    auto xDefaultRootWindow = reinterpret_cast<XDefaultRootWindowFn>(dlsym(lib, "XDefaultRootWindow"));
+    auto xInternAtom = reinterpret_cast<XInternAtomFn>(dlsym(lib, "XInternAtom"));
+    auto xSendEvent = reinterpret_cast<XSendEventFn>(dlsym(lib, "XSendEvent"));
+    auto xMapRaised = reinterpret_cast<XMapRaisedFn>(dlsym(lib, "XMapRaised"));
+    auto xSetInputFocus = reinterpret_cast<XSetInputFocusFn>(dlsym(lib, "XSetInputFocus"));
+    auto xFlush = reinterpret_cast<XFlushFn>(dlsym(lib, "XFlush"));
+
+    if (xOpenDisplay && xCloseDisplay && xDefaultRootWindow && xInternAtom && xSendEvent && xFlush) {
+        if (void *dpy = xOpenDisplay(nullptr)) {
+            const unsigned long root = xDefaultRootWindow(dpy);
+            const unsigned long window = static_cast<unsigned long>(winId);
+            const unsigned long netActiveWindow = xInternAtom(dpy, "_NET_ACTIVE_WINDOW", 0);
+
+            if (xMapRaised)
+                xMapRaised(dpy, window);
+
+            struct XClientMessageEventCompat {
+                int type;
+                unsigned long serial;
+                int send_event;
+                void *display;
+                unsigned long window;
+                unsigned long message_type;
+                int format;
+                long l[5];
+                long pad[12];
+            } ev {};
+            ev.type = 33; // ClientMessage
+            ev.send_event = 1;
+            ev.display = dpy;
+            ev.window = window;
+            ev.message_type = netActiveWindow;
+            ev.format = 32;
+            ev.l[0] = 2; // Source indication: 2 = pager / direct user action (bypasses WM focus-stealing prevention)
+            ev.l[1] = 0; // CurrentTime
+            ev.l[2] = 0;
+
+            constexpr long kSubstructureRedirectMask = (1L << 20);
+            constexpr long kSubstructureNotifyMask = (1L << 19);
+            xSendEvent(dpy, root, 0, kSubstructureRedirectMask | kSubstructureNotifyMask, &ev);
+
+            if (xSetInputFocus)
+                xSetInputFocus(dpy, window, 1 /* RevertToPointerRoot */, 0 /* CurrentTime */);
+
+            xFlush(dpy);
+            xCloseDisplay(dpy);
+        }
+    }
+    dlclose(lib);
 }
 
 class LinuxWindowEventFilter : public QObject
@@ -328,6 +401,9 @@ void NativeWindow::bringToFront()
     SetForegroundWindow(hwnd);
     if (attached)
         AttachThreadInput(thisThread, foregroundThread, FALSE);
+#else
+    if (handle())
+        activateX11Window(winId());
 #endif
 }
 

@@ -977,9 +977,13 @@ fn on_tray_event(qt: &CxxQtThread<qobject::AppController>, event: tray::TrayEven
         tray::TrayEvent::CommandPalette => {
             let results = crate::command_palette::open();
             let _ = qt.queue(move |mut object| {
-                object.as_mut().set_command_palette_results(QString::from(&results));
-                object.as_mut().set_command_palette_open(true);
-                object.activate_requested();
+                if *object.command_palette_open() {
+                    object.as_mut().set_command_palette_open(false);
+                } else {
+                    object.as_mut().set_command_palette_results(QString::from(&results));
+                    object.as_mut().set_command_palette_open(true);
+                    object.activate_requested();
+                }
             });
         }
         tray::TrayEvent::Shelf => {
