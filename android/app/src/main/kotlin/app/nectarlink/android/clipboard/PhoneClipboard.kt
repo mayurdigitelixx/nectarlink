@@ -80,37 +80,97 @@ object PhoneClipboard {
         lastWrittenAtMs = android.os.SystemClock.elapsedRealtime()
     }
 
+    internal sealed interface ItemChoice<out U> {
+        data class Text(val index: Int, val text: String, val coerced: Boolean) : ItemChoice<Nothing>
+        data class Image<out U>(val uri: U) : ItemChoice<U>
+        data object Empty : ItemChoice<Nothing>
+    }
+
+    internal class ClipCandidate<out U>(
+        val text: CharSequence? = null,
+        val uri: U? = null,
+        val isUriEcho: Boolean = false,
+        val uriMime: () -> String? = { null },
+        val coercedText: () -> CharSequence? = { null },
+    )
+
+    internal fun <U : Any> selectClipItem(
+        items: List<ClipCandidate<U>>,
+        descHasImage: Boolean = false,
+        isTextEcho: (String) -> Boolean = { false },
+    ): ItemChoice<U> {
+        for ((index, item) in items.withIndex()) {
+            val direct = item.text?.toString()?.takeIf(String::isNotBlank)
+            if (direct != null) {
+                return ItemChoice.Text(index, direct, coerced = false)
+            }
+            // Checked before coercing to text, which would turn it into its address.
+            val uri = item.uri
+            if (uri != null) {
+                if (item.isUriEcho) return ItemChoice.Empty
+                if (item.uriMime()?.startsWith("image/") == true || descHasImage) {
+                    return ItemChoice.Image(uri)
+                }
+            }
+        }
+        val coerced = items.asSequence()
+            .withIndex()
+            // Never call coerceToText on an item with a content URI because Android opens a FileInputStream
+            // on the URI and decodes raw binary file bytes (e.g. JPEG/JFIF) as UTF-8 text.
+            .filter { (_, item) -> item.uri == null }
+            .firstNotNullOfOrNull { (index, item) ->
+                item.coercedText()?.toString()?.takeIf(String::isNotBlank)?.let { index to it }
+            }
+        return if (coerced != null && !isTextEcho(coerced.second)) {
+            ItemChoice.Text(coerced.first, coerced.second, coerced = true)
+        } else {
+            ItemChoice.Empty
+        }
+    }
+
     fun read(context: Context): Read {
         appContext = context.applicationContext
         val clip = manager(context)?.primaryClip ?: return Read.Empty
         if (clip.description.isSensitive()) return Read.Private
         val resolver = context.contentResolver
-        for (i in 0 until clip.itemCount) {
+        val descHasImage = (0 until clip.description.mimeTypeCount)
+            .any { clip.description.getMimeType(it)?.startsWith("image/") == true }
+        val candidates = (0 until clip.itemCount).map { i ->
             val item = clip.getItemAt(i)
-            val cs = item.text
-            cs?.toString()?.takeIf(String::isNotBlank)?.let { text ->
-                val html = item.htmlText?.takeIf(String::isNotBlank) ?: run {
-                    if (cs is android.text.Spanned &&
-                        cs.getSpans(0, cs.length, android.text.style.CharacterStyle::class.java).isNotEmpty()
-                    ) {
-                        android.text.Html.toHtml(cs, android.text.Html.TO_HTML_PARAGRAPH_LINES_CONSECUTIVE)
-                            .takeIf(String::isNotBlank)
-                    } else if (clip.description?.label == "host clipboard" && isRecentEcho(text)) {
-                        lastWrittenHtml
-                    } else {
-                        null
-                    }
-                }
-                return Read.Text(text, html)
-            }
-            // Checked before coercing to text, which would turn it into its address.
             val uri = item.uri
-            if (uri != null && isRecentUriEcho(uri)) return Read.Empty
-            if (uri != null && resolver.getType(uri)?.startsWith("image/") == true) return Read.Image(uri)
+            ClipCandidate(
+                text = item.text,
+                uri = uri,
+                isUriEcho = uri != null && isRecentUriEcho(uri),
+                uriMime = { uri?.let { runCatching { resolver.getType(it) }.getOrNull() } },
+                coercedText = { item.coerceToText(context) },
+            )
         }
-        val text = (0 until clip.itemCount)
-            .firstNotNullOfOrNull { clip.getItemAt(it).coerceToText(context)?.toString()?.takeIf(String::isNotBlank) }
-        return text?.takeUnless { isRecentEcho(it) }?.let { Read.Text(it) } ?: Read.Empty
+        return when (val choice = selectClipItem(candidates, descHasImage, ::isRecentEcho)) {
+            is ItemChoice.Text -> {
+                if (choice.coerced) {
+                    Read.Text(choice.text)
+                } else {
+                    val item = clip.getItemAt(choice.index)
+                    val cs = item.text
+                    val html = item.htmlText?.takeIf(String::isNotBlank) ?: run {
+                        if (cs is android.text.Spanned &&
+                            cs.getSpans(0, cs.length, android.text.style.CharacterStyle::class.java).isNotEmpty()
+                        ) {
+                            android.text.Html.toHtml(cs, android.text.Html.TO_HTML_PARAGRAPH_LINES_CONSECUTIVE)
+                                .takeIf(String::isNotBlank)
+                        } else if (clip.description?.label == "host clipboard" && isRecentEcho(choice.text)) {
+                            lastWrittenHtml
+                        } else {
+                            null
+                        }
+                    }
+                    Read.Text(choice.text, html)
+                }
+            }
+            is ItemChoice.Image -> Read.Image(choice.uri)
+            ItemChoice.Empty -> Read.Empty
+        }
     }
 
     /**
