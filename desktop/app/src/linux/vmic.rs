@@ -79,6 +79,18 @@ pub fn format_source_properties(phone_name: Option<&str>) -> String {
     format!("source_properties=\"device.description='{description}'\"")
 }
 
+/// Formats `source_properties` with an explicit `"Mono"` or `"Stereo"` channel
+/// suffix so PulseAudio Volume Control (`pavucontrol`) displays the channel
+/// layout alongside the device name just like hardware ALSA profiles.
+pub fn format_source_properties_with_channels(phone_name: Option<&str>, channels: u8) -> String {
+    let mode = if channels <= 1 { "Mono" } else { "Stereo" };
+    let description = match phone_name.and_then(sanitize_phone_name) {
+        Some(name) => format!("{name} (NectarLink) {mode}"),
+        None => format!("{DEFAULT_DESCRIPTION} {mode}"),
+    };
+    format!("source_properties=\"device.description='{description}'\"")
+}
+
 /// Formats and validates the `file="..."` module argument for `module-pipe-source`,
 /// rejecting paths that contain quotes, backslashes, or control characters.
 pub fn format_file_arg(fifo_path: &Path) -> Result<String, String> {
@@ -148,6 +160,65 @@ pub fn open_fifo_nonblocking(fifo_path: &Path) -> std::io::Result<File> {
         .open(fifo_path)
 }
 
+/// Returns the PulseAudio / PipeWire `channel_map` argument for `channels`.
+pub fn format_channel_map(channels: u8) -> &'static str {
+    if channels <= 1 { "channel_map=mono" } else { "channel_map=front-left,front-right" }
+}
+
+/// Duplicates 1-channel `s16le` mono samples into 2-channel interleaved
+/// `s16le` stereo (`[L, R, L, R, ...]`) so both left and right channels carry
+/// identical full-scale signal.
+pub fn mono_to_stereo_s16le(mono_pcm: &[u8]) -> Vec<u8> {
+    let sample_count = mono_pcm.len() / 2;
+    let mut stereo = Vec::with_capacity(sample_count * 4);
+    for sample in mono_pcm.as_chunks::<2>().0 {
+        stereo.extend_from_slice(sample);
+        stereo.extend_from_slice(sample);
+    }
+    stereo
+}
+
+/// Extracts module IDs from `pactl list modules short` output that belong to a
+/// NectarLink `module-pipe-source` instance (including legacy `/tmp/nectarlink-vmic.pcm`
+/// or `NectarLink_Phone_Microphone` modules).
+pub fn parse_stale_pipe_source_modules(pactl_short: &str) -> Vec<u32> {
+    let mut ids = Vec::new();
+    for line in pactl_short.lines() {
+        let trimmed = line.trim();
+        if !trimmed.contains("module-pipe-source") {
+            continue;
+        }
+        if trimmed.contains(SOURCE_NAME)
+            || trimmed.contains("NectarLink_Phone_Microphone")
+            || trimmed.contains(FIFO_FILENAME)
+        {
+            if let Some(id_str) = trimmed.split_whitespace().next()
+                && let Ok(id) = id_str.parse::<u32>()
+            {
+                ids.push(id);
+            }
+        }
+    }
+    ids
+}
+
+/// Unloads any leftover NectarLink `module-pipe-source` modules in
+/// PulseAudio / PipeWire and removes any legacy `/tmp/nectarlink-vmic.pcm` FIFO.
+pub fn cleanup_stale_sources() {
+    if let Ok(output) = Command::new("pactl").args(["list", "modules", "short"]).output()
+        && output.status.success()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for id in parse_stale_pipe_source_modules(&stdout) {
+            destroy_source(id);
+        }
+    }
+    let legacy_tmp = Path::new("/tmp").join(FIFO_FILENAME);
+    if legacy_tmp.exists() {
+        let _ = std::fs::remove_file(legacy_tmp);
+    }
+}
+
 pub fn create_source(rate: u32, channels: u8) -> Result<u32, String> {
     let fifo_path = default_fifo_path();
     create_source_with_label(rate, channels, &fifo_path, None)
@@ -164,8 +235,10 @@ pub fn create_source_with_label(
     phone_name: Option<&str>,
 ) -> Result<u32, String> {
     let file_arg = format_file_arg(fifo_path)?;
+    cleanup_stale_sources();
     let _ = ensure_fifo(fifo_path);
-    let source_props = format_source_properties(phone_name);
+    let clean_channels = channels.clamp(1, 2);
+    let source_props = format_source_properties_with_channels(phone_name, clean_channels);
     let output = Command::new("pactl")
         .args([
             "load-module",
@@ -174,7 +247,8 @@ pub fn create_source_with_label(
             &file_arg,
             "format=s16le",
             &format!("rate={}", rate.max(8_000)),
-            &format!("channels={}", channels.max(1)),
+            &format!("channels={clean_channels}"),
+            format_channel_map(clean_channels),
             &source_props,
         ])
         .output()
@@ -182,15 +256,25 @@ pub fn create_source_with_label(
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
-    String::from_utf8_lossy(&output.stdout)
+    let module_id = String::from_utf8_lossy(&output.stdout)
         .trim()
         .parse::<u32>()
-        .map_err(|e| format!("invalid pactl module id: {e}"))
+        .map_err(|e| format!("invalid pactl module id: {e}"))?;
+
+    // Ensure the virtual source is unmuted and at 100% (0 dB) unity gain in PipeWire/PulseAudio.
+    let _ = Command::new("pactl").args(["set-source-mute", SOURCE_NAME, "0"]).status();
+    let _ = Command::new("pactl").args(["set-source-volume", SOURCE_NAME, "100%"]).status();
+
+    Ok(module_id)
 }
 
 pub fn destroy_source(module_id: u32) {
     let _ = Command::new("pactl").args(["unload-module", &module_id.to_string()]).status();
 }
+
+/// Default makeup pre-gain (in dB) applied to phone microphone streams on Linux
+/// to compensate for handset `VOICE_COMMUNICATION` attenuation at desk distance.
+pub const DEFAULT_PHONE_MAKEUP_GAIN_DB: f32 = 9.0;
 
 /// Applies `gain_db` (`-12.0..=24.0`) and `muted` to 16-bit signed little-endian
 /// PCM samples, returning `(processed_pcm_bytes, rms_level_0_to_1)`.
@@ -237,6 +321,8 @@ pub struct VirtualMic {
     fifo_path: PathBuf,
     fifo_file: Option<File>,
     module_id: Option<u32>,
+    input_channels: u8,
+    output_channels: u8,
     gain_db: f32,
     muted: bool,
     last_rms: f32,
@@ -246,17 +332,54 @@ impl VirtualMic {
     /// Creates a new `VirtualMic` controller and attempts to register the
     /// underlying `module-pipe-source` in PulseAudio/PipeWire.
     pub fn new(rate: u32, channels: u8) -> Self {
-        Self::new_for_phone(rate, channels, None)
-    }
-
-    /// Creates a new `VirtualMic` controller labeled with `phone_name` (for example,
-    /// `"Pixel 9a (NectarLink)"`) and registers `module-pipe-source`.
-    pub fn new_for_phone(rate: u32, channels: u8, phone_name: Option<&str>) -> Self {
+        let ch = channels.clamp(1, 2);
         let fifo_path = default_fifo_path();
         let _ = ensure_fifo(&fifo_path);
         let fifo_file = open_fifo_nonblocking(&fifo_path).ok();
-        let module_id = create_source_with_label(rate, channels, &fifo_path, phone_name).ok();
-        Self { fifo_path, fifo_file, module_id, gain_db: 0.0, muted: false, last_rms: 0.0 }
+        let module_id = create_source_with_label(rate, ch, &fifo_path, None).ok();
+        Self {
+            fifo_path,
+            fifo_file,
+            module_id,
+            input_channels: ch,
+            output_channels: ch,
+            gain_db: 0.0,
+            muted: false,
+            last_rms: 0.0,
+        }
+    }
+
+    /// Creates a new `VirtualMic` controller labeled with `phone_name` (for example,
+    /// `"Pixel 9a (NectarLink)"`) and registers a 2-channel stereo `module-pipe-source`
+    /// by default (upmixing mono phone audio to L+R).
+    pub fn new_for_phone(rate: u32, input_channels: u8, phone_name: Option<&str>) -> Self {
+        Self::new_for_phone_with_channels(rate, input_channels, 2, phone_name)
+    }
+
+    /// Creates a new `VirtualMic` controller labeled with `phone_name` and explicit
+    /// `input_channels` (from the phone) and `output_channels` (`1` for Mono, `2` for Stereo).
+    pub fn new_for_phone_with_channels(
+        rate: u32,
+        input_channels: u8,
+        output_channels: u8,
+        phone_name: Option<&str>,
+    ) -> Self {
+        let in_ch = input_channels.clamp(1, 2);
+        let out_ch = output_channels.clamp(1, 2);
+        let fifo_path = default_fifo_path();
+        let _ = ensure_fifo(&fifo_path);
+        let fifo_file = open_fifo_nonblocking(&fifo_path).ok();
+        let module_id = create_source_with_label(rate, out_ch, &fifo_path, phone_name).ok();
+        Self {
+            fifo_path,
+            fifo_file,
+            module_id,
+            input_channels: in_ch,
+            output_channels: out_ch,
+            gain_db: DEFAULT_PHONE_MAKEUP_GAIN_DB,
+            muted: false,
+            last_rms: 0.0,
+        }
     }
 
     /// Creates a `VirtualMic` backed by a specific FIFO path (creating the FIFO if needed)
@@ -270,6 +393,8 @@ impl VirtualMic {
             fifo_path,
             fifo_file: Some(fifo_file),
             module_id: None,
+            input_channels: 1,
+            output_channels: 1,
             gain_db: 0.0,
             muted: false,
             last_rms: 0.0,
@@ -282,6 +407,10 @@ impl VirtualMic {
 
     pub fn fifo_path(&self) -> &Path {
         &self.fifo_path
+    }
+
+    pub fn output_channels(&self) -> u8 {
+        self.output_channels
     }
 
     pub fn set_gain_db(&mut self, gain_db: f32) {
@@ -330,13 +459,19 @@ impl VirtualMic {
         }
     }
 
-    /// Processes incoming `s16le` PCM frames and writes them to the pipe FIFO
-    /// if the virtual source or FIFO handle is active.
+    /// Processes incoming `s16le` PCM frames (applying `gain_db` and upmixing mono to
+    /// stereo when `input_channels == 1 && output_channels == 2`) and writes them to
+    /// the pipe FIFO if the virtual source or FIFO handle is active.
     pub fn push_pcm(&mut self, pcm: &[u8]) -> Result<f32, String> {
         let (processed, rms) = process_mic_pcm_s16le(pcm, self.gain_db, self.muted);
         self.last_rms = rms;
         if (self.module_id.is_some() || self.fifo_file.is_some()) && !processed.is_empty() {
-            let _ = self.write_pcm_s16le(&processed);
+            if self.input_channels == 1 && self.output_channels == 2 {
+                let stereo = mono_to_stereo_s16le(&processed);
+                let _ = self.write_pcm_s16le(&stereo);
+            } else {
+                let _ = self.write_pcm_s16le(&processed);
+            }
         }
         Ok(rms)
     }
@@ -474,5 +609,39 @@ mod tests {
             "FIFO must not be placed directly in world-writable /tmp: {}",
             path.display()
         );
+    }
+
+    #[test]
+    fn parse_stale_pipe_source_modules_identifies_nectarlink_modules_only() {
+        let sample = "\
+25\tmodule-native-protocol-unix\t\n\
+536870913\tmodule-pipe-source\tsource_name=NectarLink_Virtual_Mic file=/tmp/nectarlink-vmic.pcm format=s16le rate=48000 channels=1 source_properties=device.description=NectarLink_Phone_Microphone\n\
+536870914\tmodule-pipe-source\tsource_name=NectarLink_Virtual_Mic file=\"/run/user/1000/nectarlink-vmic.pcm\" format=s16le rate=48000 channels=1 source_properties=\"device.description='IOSMOB5 (NectarLink)'\"\n\
+536870915\tmodule-pipe-source\tsource_name=Other_Pipe file=/tmp/other.pcm\n";
+        assert_eq!(parse_stale_pipe_source_modules(sample), vec![536870913, 536870914]);
+    }
+
+    #[test]
+    fn mono_to_stereo_duplicates_samples_and_format_channel_map_aligns_channels() {
+        assert_eq!(format_channel_map(1), "channel_map=mono");
+        assert_eq!(format_channel_map(2), "channel_map=front-left,front-right");
+        assert_eq!(
+            format_source_properties_with_channels(Some("IOSMOB5"), 1),
+            "source_properties=\"device.description='IOSMOB5 (NectarLink) Mono'\""
+        );
+        assert_eq!(
+            format_source_properties_with_channels(Some("IOSMOB5"), 2),
+            "source_properties=\"device.description='IOSMOB5 (NectarLink) Stereo'\""
+        );
+
+        let mut mono = Vec::new();
+        mono.extend_from_slice(&1234i16.to_le_bytes());
+        mono.extend_from_slice(&(-5678i16).to_le_bytes());
+        let stereo = mono_to_stereo_s16le(&mono);
+        assert_eq!(stereo.len(), 8);
+        assert_eq!(i16::from_le_bytes([stereo[0], stereo[1]]), 1234);
+        assert_eq!(i16::from_le_bytes([stereo[2], stereo[3]]), 1234);
+        assert_eq!(i16::from_le_bytes([stereo[4], stereo[5]]), -5678);
+        assert_eq!(i16::from_le_bytes([stereo[6], stereo[7]]), -5678);
     }
 }

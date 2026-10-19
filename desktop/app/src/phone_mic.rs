@@ -68,6 +68,8 @@ pub fn phase() -> Phase {
 
 /// Reads the chosen output from the settings.
 pub fn init(settings: &crate::settings::Settings) {
+    #[cfg(target_os = "linux")]
+    crate::win::vmic::cleanup_stale_sources();
     *OUTPUT.lock().unwrap_or_else(|e| e.into_inner()) = settings.phone_mic_output.clone();
     GAIN.store(settings.phone_mic_gain.clamp(MIN_GAIN, MAX_GAIN), Ordering::Relaxed);
 }
@@ -130,7 +132,11 @@ const CABLES: &[&str] =
 #[cfg(target_os = "linux")]
 pub const VIRTUAL_MIC_ID: &str = "nectarlink:virtual_mic";
 #[cfg(target_os = "linux")]
-pub const VIRTUAL_MIC_NAME: &str = "NectarLink Phone Mic (Virtual Microphone)";
+pub const VIRTUAL_MIC_NAME: &str = "NectarLink Phone Mic (Virtual Microphone, Stereo)";
+#[cfg(target_os = "linux")]
+pub const VIRTUAL_MIC_MONO_ID: &str = "nectarlink:virtual_mic_mono";
+#[cfg(target_os = "linux")]
+pub const VIRTUAL_MIC_MONO_NAME: &str = "NectarLink Phone Mic (Virtual Microphone, Mono)";
 
 /// The output to play into: the one chosen, while it's there; else a
 /// virtual audio cable, if there is one; else `None` (the default output).
@@ -154,11 +160,27 @@ pub fn outputs() -> (Vec<AudioOutputDevice>, Option<String>) {
     #[allow(unused_mut)]
     let mut devices = crate::win::audio::output_devices();
     #[cfg(target_os = "linux")]
-    if !devices.iter().any(|d| d.id == VIRTUAL_MIC_ID) {
-        devices.insert(
-            0,
-            AudioOutputDevice { id: VIRTUAL_MIC_ID.into(), name: VIRTUAL_MIC_NAME.into(), is_default: false },
-        );
+    {
+        if !devices.iter().any(|d| d.id == VIRTUAL_MIC_MONO_ID) {
+            devices.insert(
+                0,
+                AudioOutputDevice {
+                    id: VIRTUAL_MIC_MONO_ID.into(),
+                    name: VIRTUAL_MIC_MONO_NAME.into(),
+                    is_default: false,
+                },
+            );
+        }
+        if !devices.iter().any(|d| d.id == VIRTUAL_MIC_ID) {
+            devices.insert(
+                0,
+                AudioOutputDevice {
+                    id: VIRTUAL_MIC_ID.into(),
+                    name: VIRTUAL_MIC_NAME.into(),
+                    is_default: false,
+                },
+            );
+        }
     }
     let chosen = OUTPUT.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let output = preferred(&devices, chosen.as_deref())
@@ -296,12 +318,14 @@ impl Sink {
         let Some(config) = self.config.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return };
         let (_, output) = outputs();
         #[cfg(target_os = "linux")]
-        if output.as_deref() == Some(VIRTUAL_MIC_ID) {
+        if matches!(output.as_deref(), Some(VIRTUAL_MIC_ID | VIRTUAL_MIC_MONO_ID)) {
             self.player.lock().unwrap_or_else(|e| e.into_inner()).take();
+            let out_channels = if output.as_deref() == Some(VIRTUAL_MIC_MONO_ID) { 1 } else { 2 };
             let phone_name = core_host::host().hub.read(|s| s.name_of(&self.peer));
-            let vmic = crate::win::vmic::VirtualMic::new_for_phone(
+            let vmic = crate::win::vmic::VirtualMic::new_for_phone_with_channels(
                 config.rate,
                 config.channels,
+                out_channels,
                 phone_name.as_deref(),
             );
             *self.vmic.lock().unwrap_or_else(|e| e.into_inner()) = Some(vmic);
@@ -326,7 +350,7 @@ impl MicSink for Sink {
         #[cfg(target_os = "linux")]
         if let Some(vmic) = self.vmic.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
             amplify(&mut data, gain());
-            let _ = vmic.write_pcm_s16le(&data);
+            let _ = vmic.push_pcm(&data);
             return;
         }
         if let Some(player) = self.player.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
