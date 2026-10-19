@@ -70,6 +70,18 @@ class PhoneClipboardTest {
         )
         assertEquals(ItemChoice.Empty, choice)
         assertFalse("coerceToText must not be called for URI-backed items", coerceCalled)
+
+        val withImageDesc = PhoneClipboard.selectClipItem(
+            items = listOf(
+                ClipCandidate(
+                    text = null,
+                    uri = "content://downloads/document.pdf",
+                    uriMime = { "application/pdf" },
+                ),
+            ),
+            descHasImage = true,
+        )
+        assertEquals(ItemChoice.Empty, withImageDesc)
     }
 
     @Test

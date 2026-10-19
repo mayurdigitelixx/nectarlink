@@ -108,7 +108,8 @@ object PhoneClipboard {
             val uri = item.uri
             if (uri != null) {
                 if (item.isUriEcho) return ItemChoice.Empty
-                if (item.uriMime()?.startsWith("image/") == true || descHasImage) {
+                val mime = item.uriMime()
+                if (mime?.startsWith("image/") == true || (mime == null && descHasImage)) {
                     return ItemChoice.Image(uri)
                 }
             }
