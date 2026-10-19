@@ -234,7 +234,15 @@ struct Options {
     /// The uninstaller's window (`--remove [--installed <folder>]`).
     remove: bool,
     installed: Option<PathBuf>,
+    /// `--ui-check` (needs `--data-dir`): open the main window, quit after
+    /// [`UI_CHECK_SECONDS`], and fail if QML reported a warning or an error.
+    /// Qt's messages go to stderr. For CI (`scripts/ui-check.ps1`).
+    ui_check: bool,
 }
+
+/// How long `--ui-check` keeps the window open: long enough for the window
+/// to load, be restored and settle.
+const UI_CHECK_SECONDS: u64 = 8;
 
 fn parse_options() -> Options {
     parse_options_from(std::env::args_os().skip(1))
@@ -263,6 +271,10 @@ fn parse_options_from<I: IntoIterator<Item = std::ffi::OsString>>(iter: I) -> Op
             Some("--uninstall") => {
                 in_share = false;
                 options.uninstall = true;
+            }
+            Some("--ui-check") => {
+                in_share = false;
+                options.ui_check = true;
             }
             Some(setup::SETUP_ARG) => {
                 in_share = false;
@@ -465,6 +477,11 @@ fn main() -> ExitCode {
             }
         };
     }
+    // The check starts the whole app, so never on the user's own data.
+    if options.ui_check && options.data_dir.is_none() {
+        eprintln!("nectarlink: --ui-check needs --data-dir");
+        return ExitCode::FAILURE;
+    }
     let data_dir = options.data_dir.clone().unwrap_or_else(default_data_dir);
     if let Err(e) = std::fs::create_dir_all(&data_dir) {
         eprintln!("nectarlink: can't create {}: {e}", data_dir.display());
@@ -595,7 +612,11 @@ fn main() -> ExitCode {
         send_to::handle(request);
     }
 
-    bridge::native::ffi::prepare_qt();
+    if options.ui_check {
+        bridge::native::ffi::prepare_qt_for_ui_check();
+    } else {
+        bridge::native::ffi::prepare_qt();
+    }
     let mut app = QGuiApplication::new();
     if let Some(mut app) = app.as_mut() {
         app.as_mut().set_application_name(&QString::from("Nectarlink"));
@@ -630,6 +651,12 @@ fn main() -> ExitCode {
         bridge::native::ffi::register_qml_app_engine(engine.as_mut());
         engine.load(&QUrl::from("qrc:/qt/qml/app/nectarlink/qml/App.qml"));
     }
+    if options.ui_check {
+        std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_secs(UI_CHECK_SECONDS));
+            bridge::app::request_quit();
+        });
+    }
     let code = app.as_mut().map_or(1, |app| app.exec());
 
     tracing::info!(code, "shutting down");
@@ -644,6 +671,14 @@ fn main() -> ExitCode {
     win::net::stop();
     core_host::shutdown();
     drop(app);
+    if options.ui_check {
+        let problems = bridge::native::ffi::qml_problem_count();
+        if problems > 0 {
+            eprintln!("nectarlink: --ui-check: {problems} QML warning(s) or error(s), see above");
+            return ExitCode::FAILURE;
+        }
+        eprintln!("nectarlink: --ui-check: no QML warnings");
+    }
     ExitCode::from(u8::try_from(code).unwrap_or(1))
 }
 
@@ -670,6 +705,17 @@ mod tests {
                 text: None,
             })
         );
+    }
+
+    #[test]
+    fn parse_options_recognizes_ui_check_flag() {
+        let opts = parse_options_from(
+            ["--ui-check", "--data-dir", r"C:\Temp\nectarlink-test"].into_iter().map(OsString::from),
+        );
+        assert!(opts.ui_check);
+        assert!(!opts.minimized);
+        assert_eq!(opts.data_dir, Some(PathBuf::from(r"C:\Temp\nectarlink-test")));
+        assert!(!parse_options_from(["--minimized"].into_iter().map(OsString::from)).ui_check);
     }
 
     #[test]

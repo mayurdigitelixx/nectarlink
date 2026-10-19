@@ -85,6 +85,9 @@ jobs:
       - name: Installer
         shell: pwsh
         run: ./scripts/package.ps1 -SkipBuild
+      - name: Open the main window, with no QML warnings
+        shell: pwsh
+        run: ./scripts/ui-check.ps1
       - name: Install, run and uninstall it
         shell: pwsh
         run: ./scripts/smoke-installer.ps1

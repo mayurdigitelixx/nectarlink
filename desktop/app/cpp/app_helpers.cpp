@@ -79,7 +79,37 @@ void register_qml_app_engine(QQmlApplicationEngine &engine)
 #include <QtCore/QStandardPaths>
 #include <QtCore/QTextStream>
 
+#include <atomic>
+#include <cstdio>
+
 namespace {
+std::atomic<int> &qmlProblems()
+{
+    static std::atomic<int> count { 0 };
+    return count;
+}
+
+// A warning or error from QML: a component that didn't load, a binding or
+// a script that failed.
+bool isQmlProblem(QtMsgType type, const QMessageLogContext &ctx, const QString &msg)
+{
+    if (type != QtWarningMsg && type != QtCriticalMsg && type != QtFatalMsg)
+        return false;
+    return (ctx.file && QByteArray(ctx.file).startsWith("qrc:/")) || msg.contains(QStringLiteral("qrc:/"));
+}
+
+// `--ui-check`: messages go to stderr, not the log file, and QML problems
+// are counted.
+void uiCheckMessageHandler(QtMsgType type, const QMessageLogContext &ctx, const QString &msg)
+{
+    if (type == QtDebugMsg)
+        return;
+    if (isQmlProblem(type, ctx, msg))
+        qmlProblems().fetch_add(1);
+    std::fprintf(stderr, "[%d] %s (%s:%d)\n", int(type), qUtf8Printable(msg), ctx.file ? ctx.file : "", ctx.line);
+    std::fflush(stderr);
+}
+
 void qtLogMessageHandler(QtMsgType type, const QMessageLogContext &ctx, const QString &msg)
 {
     if (type == QtDebugMsg)
@@ -100,6 +130,17 @@ void prepare_qt()
 {
     qInstallMessageHandler(qtLogMessageHandler);
     prepare_qt_without_log();
+}
+
+void prepare_qt_for_ui_check()
+{
+    qInstallMessageHandler(uiCheckMessageHandler);
+    prepare_qt_without_log();
+}
+
+int32_t qml_problem_count()
+{
+    return qmlProblems().load();
 }
 
 void prepare_qt_without_log()

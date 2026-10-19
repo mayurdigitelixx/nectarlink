@@ -20,6 +20,12 @@ pub mod ffi {
         /// Like `prepare_qt`, without the QML log file: for the installer
         /// and uninstaller, which mustn't create the app's data folder.
         fn prepare_qt_without_log();
+        /// Like `prepare_qt`, for `--ui-check`: Qt's messages go to stderr
+        /// instead of the log file, and QML warnings and errors are counted.
+        fn prepare_qt_for_ui_check();
+        /// How many QML warnings and errors there were since
+        /// `prepare_qt_for_ui_check`.
+        fn qml_problem_count() -> i32;
         fn add_app_icon_image(size: i32, rgba: &[u8]);
         fn apply_app_icon();
         fn keep_running_without_windows();
