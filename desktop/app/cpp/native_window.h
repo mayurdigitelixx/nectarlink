@@ -18,7 +18,6 @@ class NativeWindow : public QQuickWindow
     Q_OBJECT
     QML_ELEMENT
 
-
     // Show Mica behind transparent areas.
     Q_PROPERTY(bool backdrop READ backdrop WRITE setBackdrop NOTIFY backdropChanged)
     // Use Windows 11 Desktop Acrylic (DWMSBT_TRANSIENTWINDOW) when backdrop is active (for Liquid Glass theme).

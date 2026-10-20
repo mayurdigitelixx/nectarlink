@@ -188,6 +188,11 @@ pub fn launch_app(path: &std::path::Path) -> Result<(), String> {
     if result.0 as isize > 32 { Ok(()) } else { Err(format!("ShellExecute returned {}", result.0 as isize)) }
 }
 
+/// Opens a directory in File Explorer.
+pub fn open_folder(path: &std::path::Path) -> Result<(), String> {
+    std::process::Command::new("explorer.exe").arg(path).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
 /// Runs a PC-configured shell command (`cmd.exe /C <command>`) without flashing
 /// a console window.
 pub fn run_command(command: &str) -> Result<(), String> {
