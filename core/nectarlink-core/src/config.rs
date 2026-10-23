@@ -44,6 +44,78 @@ pub struct NodeConfig {
     /// ADB server address on a PC (`127.0.0.1:5037`) for automatic USB
     /// detection, port forwarding, and USB auto-pairing.
     pub adb_server: Option<std::net::SocketAddr>,
+    /// How connections pace bulk data (file transfers): the congestion
+    /// controller and the flow-control windows.
+    pub transport: TransportTuning,
+}
+
+/// The congestion controller for connections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Congestion {
+    /// Loss-based (RFC 9438), noq's default: grows fast until the network
+    /// drops packets, filling router buffers on the way.
+    Cubic,
+    /// Model-based (BBRv3): sends at the measured bottleneck rate and keeps
+    /// the queue short.
+    Bbr3,
+    /// Loss-based (RFC 9002, the QUIC specification's own), with gentler
+    /// growth than Cubic. The default: on a Wi-Fi 6 network it moved files
+    /// as fast as Cubic with about half the added delay for other traffic,
+    /// and without the dropped packets Cubic caused (2026-10-23).
+    NewReno,
+}
+
+/// Transport settings for bulk data. The defaults are what ships; the
+/// environment can override them for measurements on real networks:
+/// `NECTARLINK_CONGESTION` (`cubic`, `bbr3`, `newreno`) and
+/// `NECTARLINK_WINDOW_MB` (the per-stream window; the connection gets twice it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransportTuning {
+    pub congestion: Congestion,
+    /// Bytes a single stream may have in flight.
+    pub stream_window: u32,
+    /// Bytes all streams of a connection may have in flight together.
+    pub connection_window: u32,
+}
+
+impl Default for TransportTuning {
+    fn default() -> Self {
+        // Room for a file transfer to keep the link busy through Wi-Fi's
+        // latency spikes (the QUIC defaults suit ~100 Mbit/s at 100 ms).
+        TransportTuning {
+            congestion: Congestion::NewReno,
+            stream_window: 16 << 20,
+            connection_window: 32 << 20,
+        }
+    }
+}
+
+impl TransportTuning {
+    /// The defaults, with any `NECTARLINK_CONGESTION` / `NECTARLINK_WINDOW_MB` override.
+    pub fn from_env() -> Self {
+        Self::parse(
+            std::env::var("NECTARLINK_CONGESTION").ok().as_deref(),
+            std::env::var("NECTARLINK_WINDOW_MB").ok().as_deref(),
+        )
+    }
+
+    /// The defaults with the given overrides; unknown values keep the default.
+    pub fn parse(congestion: Option<&str>, window_mb: Option<&str>) -> Self {
+        let mut tuning = TransportTuning::default();
+        match congestion.map(|c| c.trim().to_ascii_lowercase()).as_deref() {
+            Some("cubic") => tuning.congestion = Congestion::Cubic,
+            Some("bbr" | "bbr3") => tuning.congestion = Congestion::Bbr3,
+            Some("newreno" | "reno") => tuning.congestion = Congestion::NewReno,
+            _ => {}
+        }
+        if let Some(mb) =
+            window_mb.and_then(|w| w.trim().parse::<u32>().ok()).filter(|mb| (1..=1024).contains(mb))
+        {
+            tuning.stream_window = mb << 20;
+            tuning.connection_window = (mb << 20).saturating_mul(2);
+        }
+        tuning
+    }
 }
 
 impl NodeConfig {
@@ -66,6 +138,7 @@ impl NodeConfig {
             localsend_port,
             usb_port: None,
             adb_server: None,
+            transport: TransportTuning::from_env(),
         }
     }
 }
@@ -83,6 +156,7 @@ impl fmt::Debug for NodeConfig {
             .field("localsend_port", &self.localsend_port)
             .field("usb_port", &self.usb_port)
             .field("adb_server", &self.adb_server)
+            .field("transport", &self.transport)
             .field("downloads_dir", &self.downloads_dir)
             .finish_non_exhaustive()
     }
@@ -481,3 +555,24 @@ pub trait Platform: Send + Sync + 'static {
 pub struct NoopPlatform;
 
 impl Platform for NoopPlatform {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transport_overrides_parse_and_bad_values_keep_the_defaults() {
+        let default = TransportTuning::default();
+        assert_eq!(TransportTuning::parse(None, None), default);
+        assert_eq!(default.congestion, Congestion::NewReno);
+        assert_eq!(TransportTuning::parse(Some("cubic"), None).congestion, Congestion::Cubic);
+        assert_eq!(TransportTuning::parse(Some(" BBR3 "), None).congestion, Congestion::Bbr3);
+        assert_eq!(TransportTuning::parse(Some("bbr"), None).congestion, Congestion::Bbr3);
+        assert_eq!(TransportTuning::parse(Some("newreno"), None).congestion, Congestion::NewReno);
+        assert_eq!(TransportTuning::parse(Some("vegas"), None), default, "unknown controller");
+        let small = TransportTuning::parse(None, Some("4"));
+        assert_eq!((small.stream_window, small.connection_window), (4 << 20, 8 << 20));
+        assert_eq!(TransportTuning::parse(None, Some("0")), default, "a zero window would stall");
+        assert_eq!(TransportTuning::parse(None, Some("lots")), default);
+    }
+}

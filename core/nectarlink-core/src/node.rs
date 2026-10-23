@@ -58,9 +58,6 @@ const EVENT_CAPACITY: usize = 2048;
 /// instead of after QUIC's default of 30 s.
 const KEEP_ALIVE_INTERVAL: Duration = Duration::from_millis(1000);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(8);
-/// Flow-control windows: how much may be in flight per stream and in all.
-const STREAM_WINDOW: u32 = 16 * 1024 * 1024;
-const CONNECTION_WINDOW: u32 = 32 * 1024 * 1024;
 /// How long opening a stream the PC asked for (its screen, an app window)
 /// waits for the connection to come back if it just dropped or was replaced.
 const STREAM_RECONNECT_WAIT: Duration = Duration::from_secs(10);
@@ -3726,15 +3723,31 @@ async fn bind_endpoint(
     secret: iroh::SecretKey,
     ports: Option<Ports>,
 ) -> Result<Endpoint> {
+    let tuning = config.transport;
+    let controller: std::sync::Arc<dyn iroh::endpoint::ControllerFactory + Send + Sync> = match tuning
+        .congestion
+    {
+        crate::config::Congestion::Cubic => {
+            std::sync::Arc::new(noq_proto::congestion::CubicConfig::default())
+        }
+        crate::config::Congestion::Bbr3 => std::sync::Arc::new(noq_proto::congestion::Bbr3Config::default()),
+        crate::config::Congestion::NewReno => {
+            std::sync::Arc::new(noq_proto::congestion::NewRenoConfig::default())
+        }
+    };
+    tracing::info!(
+        congestion = ?tuning.congestion,
+        stream_window = tuning.stream_window,
+        connection_window = tuning.connection_window,
+        "transport"
+    );
     let transport = QuicTransportConfig::builder()
         .keep_alive_interval(KEEP_ALIVE_INTERVAL)
         .max_idle_timeout(Some(IDLE_TIMEOUT.try_into().expect("the idle timeout fits a QUIC varint")))
-        // Room for a file transfer to keep the link busy through Wi-Fi's
-        // latency spikes (the defaults suit ~100 Mbit/s at 100 ms; a phone
-        // on Wi-Fi 6 does several times that, with bursts of delay).
-        .stream_receive_window(VarInt::from_u32(STREAM_WINDOW))
-        .receive_window(VarInt::from_u32(CONNECTION_WINDOW))
-        .send_window(u64::from(CONNECTION_WINDOW))
+        .stream_receive_window(VarInt::from_u32(tuning.stream_window))
+        .receive_window(VarInt::from_u32(tuning.connection_window))
+        .send_window(u64::from(tuning.connection_window))
+        .congestion_controller_factory(controller)
         .build();
     let mut builder = Endpoint::builder(presets::Minimal)
         .secret_key(secret)
