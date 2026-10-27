@@ -135,6 +135,9 @@ pub fn compute_capabilities(
         }
         #[cfg(target_os = "linux")]
         {
+            if crate::win::h264::supports_hevc_hardware() {
+                caps.push(nectarlink_core::MIRROR_HEVC.into());
+            }
             if crate::win::vcam::dll_path().is_some() || crate::win::vcam::is_registered() {
                 caps.push(nectarlink_core::WEBCAM_VIRTUAL.into());
             }

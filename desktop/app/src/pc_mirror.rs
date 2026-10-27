@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Shares the PC's display with a paired phone over `mirror` / `video` (session 0).
-//! Encodes H.264 or HEVC using Media Foundation on Windows, or H.264 using OpenH264
+//! Encodes H.264 or HEVC using Media Foundation on Windows and FFmpeg or OpenH264
 //! on Linux, and handles remote touch, keyboard, and pointer input.
 
 #[cfg(any(windows, target_os = "linux"))]
@@ -106,7 +106,15 @@ mod imp {
         }
         #[cfg(target_os = "linux")]
         {
-            if openh264_enc_api().is_none() {
+            let can_encode = openh264_enc_api().is_some();
+            #[cfg(linux_ffmpeg_video)]
+            let can_encode = can_encode || {
+                static HARDWARE_AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                *HARDWARE_AVAILABLE.get_or_init(|| {
+                    crate::win::video_encoder::Encoder::new("h264", 320, 240, 30, 1_000_000).is_ok()
+                })
+            };
+            if !can_encode {
                 return false;
             }
             let has_x11 = std::env::var_os("DISPLAY").is_some() && x11_api().is_some();
@@ -1013,7 +1021,7 @@ mod imp {
     }
 
     #[cfg(target_os = "linux")]
-    pub(crate) struct ScreenEncoder {
+    pub(crate) struct OpenH264Encoder {
         encoder: *mut std::ffi::c_void,
         width: u32,
         height: u32,
@@ -1023,7 +1031,7 @@ mod imp {
     }
 
     #[cfg(target_os = "linux")]
-    impl Drop for ScreenEncoder {
+    impl Drop for OpenH264Encoder {
         fn drop(&mut self) {
             if !self.encoder.is_null() {
                 unsafe {
@@ -1040,20 +1048,7 @@ mod imp {
     }
 
     #[cfg(target_os = "linux")]
-    impl ScreenEncoder {
-        pub(crate) fn new_for_codec(
-            codec: &str,
-            width: u32,
-            height: u32,
-            fps: u32,
-            bitrate: u32,
-        ) -> Result<Self, String> {
-            if codec != "h264" {
-                return Err("Linux screen encoding supports H.264 only".into());
-            }
-            Self::new(width, height, fps, bitrate)
-        }
-
+    impl OpenH264Encoder {
         pub(crate) fn new(width: u32, height: u32, fps: u32, bitrate: u32) -> Result<Self, String> {
             let api = openh264_enc_api().ok_or_else(|| "libopenh264 encoder unavailable".to_owned())?;
             unsafe {
@@ -1301,6 +1296,83 @@ mod imp {
                 bytes.extend_from_slice(&raw);
                 self.sent_first_frame = true;
                 Ok(vec![(is_idr, bytes)])
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) enum ScreenEncoder {
+        OpenH264(OpenH264Encoder),
+        #[cfg(linux_ffmpeg_video)]
+        Hardware(crate::win::video_encoder::Encoder),
+    }
+
+    #[cfg(target_os = "linux")]
+    impl ScreenEncoder {
+        pub(crate) fn new_for_codec(
+            codec: &str,
+            width: u32,
+            height: u32,
+            fps: u32,
+            bitrate: u32,
+        ) -> Result<Self, String> {
+            #[cfg(linux_ffmpeg_video)]
+            match crate::win::video_encoder::Encoder::new(codec, width, height, fps, bitrate) {
+                Ok(encoder) => return Ok(Self::Hardware(encoder)),
+                Err(error) if codec != "h264" => return Err(error),
+                Err(error) => tracing::debug!(%error, "Hardware H.264 unavailable; using OpenH264"),
+            }
+            if codec != "h264" {
+                return Err(
+                    "HEVC hardware encoding requires FFmpeg development libraries at build time".into()
+                );
+            }
+            OpenH264Encoder::new(width, height, fps, bitrate).map(Self::OpenH264)
+        }
+
+        #[cfg(linux_ffmpeg_video)]
+        fn next_encoder(&mut self, codec: &str, width: u32, height: u32, fps: u32, bitrate: u32) -> bool {
+            if let Self::Hardware(encoder) = self {
+                if encoder.next_device() {
+                    return true;
+                }
+                if codec == "h264"
+                    && let Ok(software) = OpenH264Encoder::new(width, height, fps, bitrate)
+                {
+                    *self = Self::OpenH264(software);
+                    return true;
+                }
+            }
+            false
+        }
+
+        pub(crate) fn request_keyframe(&self) -> bool {
+            match self {
+                Self::OpenH264(encoder) => encoder.request_keyframe(),
+                #[cfg(linux_ffmpeg_video)]
+                Self::Hardware(encoder) => encoder.request_keyframe(),
+            }
+        }
+
+        pub(crate) fn set_bitrate(&self, bitrate: u32) -> bool {
+            match self {
+                Self::OpenH264(encoder) => encoder.set_bitrate(bitrate),
+                #[cfg(linux_ffmpeg_video)]
+                Self::Hardware(encoder) => encoder.set_bitrate(bitrate),
+            }
+        }
+
+        pub(crate) fn encode(
+            &mut self,
+            nv12: &[u8],
+            hns: i64,
+            dur_hns: i64,
+            stop: &AtomicBool,
+        ) -> Result<Vec<(bool, Vec<u8>)>, String> {
+            match self {
+                Self::OpenH264(encoder) => encoder.encode(nv12, hns, dur_hns, stop),
+                #[cfg(linux_ffmpeg_video)]
+                Self::Hardware(encoder) => encoder.encode(nv12, hns, stop),
             }
         }
     }
@@ -2397,7 +2469,7 @@ mod imp {
                         if stop.load(Ordering::Relaxed) {
                             break;
                         }
-                        #[cfg(windows)]
+                        #[cfg(any(windows, linux_ffmpeg_video))]
                         if enc.next_encoder(&codec, dst_w, dst_h, fps, bitrate) {
                             tracing::warn!(error = %e, codec, "Video encoding failed; trying another encoder");
                             stats.rebuilds += 1;
@@ -2721,7 +2793,8 @@ mod imp {
             #[cfg(windows)]
             let mut enc = new_pc_encoder("h264", w, h, 30, 2_000_000).expect("ScreenEncoder");
             #[cfg(target_os = "linux")]
-            let mut enc = ScreenEncoder::new(w, h, 30, 2_000_000).expect("OpenH264");
+            let mut enc =
+                ScreenEncoder::OpenH264(OpenH264Encoder::new(w, h, 30, 2_000_000).expect("OpenH264"));
             let mut nv12 = Vec::new();
             bgra_to_nv12(&vec![128u8; (w as usize) * (h as usize) * 4], w as usize, h as usize, &mut nv12);
             let stop = AtomicBool::new(false);

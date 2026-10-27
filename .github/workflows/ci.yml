@@ -169,7 +169,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libgl1-mesa-dev libxkbcommon-dev libvulkan-dev libx11-dev \
-            ffmpeg libopenh264-dev
+            ffmpeg libavcodec-dev libavutil-dev libopenh264-dev
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
@@ -183,6 +183,12 @@ jobs:
         run: cargo clippy --locked -p nectarlink-desktop -p nectarlink-vcam -p s1-qt-rust --all-targets -- -D warnings
       - name: Tests
         run: cargo test --locked -p nectarlink-desktop -p nectarlink-vcam
+      - name: Video adapter fallback
+        run: bash desktop/app/tests/linux_video_dispatch_test.sh
+      - name: Check without the optional FFmpeg backend
+        env:
+          LIBAVCODEC_NO_PKG_CONFIG: "1"
+        run: cargo check --locked -p nectarlink-desktop --tests
       - name: Release build
         run: cargo build --locked --release -p nectarlink-desktop -p nectarlink-vcam
 

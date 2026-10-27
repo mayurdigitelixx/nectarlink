@@ -111,7 +111,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config libgl1-mesa-dev libx11-dev libxcb1-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig1-dev \
-            libfreetype-dev libdbus-1-dev libxtst-dev file desktop-file-utils appstream rpm shellcheck
+            libfreetype-dev libdbus-1-dev libxtst-dev libavcodec-dev libavutil-dev \
+            file desktop-file-utils appstream rpm shellcheck
+          pkg-config --exists libavcodec libavutil
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
@@ -146,11 +148,27 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
           cargo build --release -p nectarlink-desktop
+          bash ./desktop/packaging/linux/build-ffmpeg-backends.sh
           ./desktop/packaging/linux/build-deb.sh
           ./desktop/packaging/linux/build-rpm.sh
           ./desktop/packaging/linux/build-appimage.sh
           ./desktop/packaging/linux/build-tarball.sh
           cp desktop/packaging/linux/install.sh dist/install.sh
+      - name: Check video adapters in each package
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          dpkg-deb -c dist/*.deb > /tmp/nectarlink-deb-files
+          rpm -qlp dist/*.rpm > /tmp/nectarlink-rpm-files
+          tar -tzf dist/*.tar.gz > /tmp/nectarlink-tar-files
+          (cd /tmp && "$GITHUB_WORKSPACE"/dist/*.AppImage --appimage-extract 'usr/bin/libnectarlink-video-ffmpeg*.so')
+          for major in 7 8 9; do
+            adapter="libnectarlink-video-ffmpeg${major}.so"
+            grep -F "$adapter" /tmp/nectarlink-deb-files
+            grep -F "$adapter" /tmp/nectarlink-rpm-files
+            grep -F "$adapter" /tmp/nectarlink-tar-files
+            test -f "/tmp/squashfs-root/usr/bin/$adapter"
+          done
       - name: Check that each package starts
         # A package that doesn't start must not reach a release. The .deb goes
         # into a clean Ubuntu 24.04, the oldest system the build supports.

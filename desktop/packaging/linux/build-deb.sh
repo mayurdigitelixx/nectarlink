@@ -54,6 +54,9 @@ mkdir -p \
     "${PKG_ROOT}/usr/share/icons/hicolor/scalable/apps"
 
 install -m 0755 "${BIN_PATH}" "${PKG_ROOT}/usr/lib/nectarlink/nectarlink-desktop"
+for adapter in "$(dirname "${BIN_PATH}")"/libnectarlink-video-ffmpeg*.so; do
+    [[ ! -f "${adapter}" ]] || install -m 0755 "${adapter}" "${PKG_ROOT}/usr/lib/nectarlink/"
+done
 cat > "${PKG_ROOT}/usr/bin/nectarlink-desktop" <<'EOF'
 #!/usr/bin/env sh
 if [ -d /usr/lib/nectarlink/lib ]; then

@@ -182,8 +182,16 @@ fn openh264_api() -> Option<&'static OpenH264Api> {
 }
 
 enum Backend {
-    AvCodec { ctx: *mut c_void, pkt: *mut c_void, frame: *mut c_void },
-    OpenH264 { dec: *mut c_void },
+    #[cfg(linux_ffmpeg_video)]
+    Native(super::video_decoder::Decoder),
+    AvCodec {
+        ctx: *mut c_void,
+        pkt: *mut c_void,
+        frame: *mut c_void,
+    },
+    OpenH264 {
+        dec: *mut c_void,
+    },
 }
 
 // SAFETY: Decoder is owned and used exclusively by a single decode worker thread at a time.
@@ -192,6 +200,8 @@ unsafe impl Send for Backend {}
 impl std::fmt::Debug for Backend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            #[cfg(linux_ffmpeg_video)]
+            Backend::Native(_) => f.write_str("Backend::Native"),
             Backend::AvCodec { .. } => f.write_str("Backend::AvCodec"),
             Backend::OpenH264 { .. } => f.write_str("Backend::OpenH264"),
         }
@@ -201,6 +211,8 @@ impl std::fmt::Debug for Backend {
 impl Drop for Backend {
     fn drop(&mut self) {
         match self {
+            #[cfg(linux_ffmpeg_video)]
+            Backend::Native(_) => {}
             Backend::AvCodec { ctx, pkt, frame } => {
                 if let Some(api) = avcodec_api() {
                     unsafe {
@@ -332,10 +344,25 @@ impl Decoder {
     }
 
     pub fn new_gpu(codec: &str) -> Result<Decoder> {
+        #[cfg(linux_ffmpeg_video)]
+        match super::video_decoder::Decoder::new(codec) {
+            Ok(decoder) => {
+                return Ok(Self {
+                    codec_name: if codec == "h265" || codec == "hevc" { "hevc" } else { "h264" },
+                    backend: Backend::Native(decoder),
+                    stream_colors: None,
+                });
+            }
+            Err(error) => tracing::debug!(%error, codec, "Linux hardware decoder unavailable"),
+        }
         Self::new_for_codec(codec)
     }
 
     pub fn on_gpu(&self) -> bool {
+        #[cfg(linux_ffmpeg_video)]
+        if let Backend::Native(decoder) = &self.backend {
+            return decoder.on_gpu();
+        }
         false
     }
 
@@ -353,7 +380,26 @@ impl Decoder {
             self.stream_colors = Some(colors);
         }
         let stream_colors = self.stream_colors;
+        #[cfg(linux_ffmpeg_video)]
+        if let Backend::Native(decoder) = &mut self.backend {
+            match decoder.decode(data) {
+                Ok(pictures) => return Ok(pictures),
+                Err(error) => {
+                    if decoder.next_device() {
+                        return Err(error);
+                    }
+                    tracing::warn!(%error, codec = self.codec_name, "Video decoder failed; trying another software decoder");
+                    if let Ok(mut software) = Self::new_for_codec(self.codec_name) {
+                        software.stream_colors = stream_colors;
+                        *self = software;
+                    }
+                    return Err(error);
+                }
+            }
+        }
         match &mut self.backend {
+            #[cfg(linux_ffmpeg_video)]
+            Backend::Native(_) => unreachable!("native decoding handled above"),
             Backend::OpenH264 { dec } => Self::decode_openh264(*dec, data, stream_colors),
             Backend::AvCodec { ctx, pkt, frame } => {
                 Self::decode_avcodec(*ctx, *pkt, *frame, data, stream_colors)
@@ -459,6 +505,8 @@ impl Decoder {
 
     pub fn flush(&mut self) {
         match &mut self.backend {
+            #[cfg(linux_ffmpeg_video)]
+            Backend::Native(decoder) => decoder.flush(),
             Backend::AvCodec { ctx, .. } => {
                 if let Some(api) = avcodec_api()
                     && !ctx.is_null()
@@ -484,6 +532,11 @@ impl Decoder {
             }
         }
     }
+}
+
+pub(crate) fn supports_hevc_hardware() -> bool {
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| Decoder::new_gpu("h265").is_ok_and(|decoder| decoder.on_gpu()))
 }
 
 /// Split an Annex-B bitstream (`00 00 01` or `00 00 00 01` start codes) into individual

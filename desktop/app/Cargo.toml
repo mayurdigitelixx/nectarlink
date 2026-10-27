@@ -121,6 +121,8 @@ libc = "0.2"
 zbus.workspace = true
 
 [build-dependencies]
+cc = "1"
+pkg-config = "0.3"
 cxx-qt-build = { workspace = true, features = ["link_qt_object_files"] }
 embed-resource.workspace = true
 
