@@ -576,7 +576,11 @@ object InputServer {
         }
 
         private fun send(event: InputEvent) {
-            if (display >= 0) setDisplayId?.invoke(event, display)
+            if (display >= 0) {
+                // A missing display-routing API must not fall back to the phone screen.
+                val route = setDisplayId ?: return
+                route.invoke(event, display)
+            }
             // 0: asynchronous; the app doesn't wait for the target app.
             inject.invoke(manager, event, 0)
         }

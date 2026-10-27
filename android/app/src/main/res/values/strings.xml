@@ -391,6 +391,8 @@
     <string name="mic_request_card_text">It stays on until you or the PC stop it.</string>
     <string name="mic_pc_toggle">Use this phone as a microphone</string>
     <string name="mic_pc_toggle_hint">On by default. This PC can ask for the microphone. It only turns on when you tap Start.</string>
+    <string name="mirroring_pc_toggle">Screen sharing and typing</string>
+    <string name="mirroring_pc_toggle_hint">Allow this computer to view this phone’s screen. Phone control is a separate setting.</string>
     <string name="recorder_notification_recording">Recording for %1$s</string>
     <string name="recorder_notification_paused">Recording paused (%1$s)</string>
     <string name="recorder_permission_title">Allow microphone access</string>
@@ -659,6 +661,9 @@
     <!-- Remote PC keyboard typing without mirroring -->
     <string name="keyboard_from_pc_banner">Typing from %1$s</string>
     <string name="keyboard_stop">Stop typing</string>
+    <string name="keyboard_stop_not_saved">The stop could not be saved. Typing is blocked for this session; fail-closed recovery will keep paired PCs blocked after a restart.</string>
+    <string name="keyboard_stop_wait_for_node">NectarLink is not ready, so the stop could not be saved. Try again after it reconnects.</string>
+    <string name="keyboard_recovery_required">NectarLink is blocking typing from this PC. To resume, turn mirroring off and then on. If it is already off, turn it on first; if this notice remains, turn it off and on again.</string>
 
     <!-- Home-screen PC widget -->
     <string name="widget_pc_title">PC quick actions</string>
@@ -1361,6 +1366,9 @@
     <string name="device_name_in_profile">%1$s (%2$s)</string>
     <string name="profile_work">Work</string>
     <string name="profile_other">Second profile</string>
+    <string name="phone_control_pc_toggle">Allow phone control</string>
+    <string name="phone_control_pc_toggle_hint">Allow this trusted computer to tap, scroll and type only while this phone’s screen is shared. Off by default. This switch does not undo Stop.</string>
+    <string name="mirror_request_text_control">It can also tap, scroll and type on this phone. Tap to share it. You can stop anytime.</string>
 </resources>
 
 

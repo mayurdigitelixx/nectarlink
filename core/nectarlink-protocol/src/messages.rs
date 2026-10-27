@@ -369,10 +369,16 @@ pub struct Hello {
     #[serde(default)]
     pub caps: Vec<String>,
     pub power: PowerLevel,
+    /// Phone-owner input generation, only for this trusted PC and an admitted grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_epoch: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelloUpdate {
+    /// Recomputed with caps; absent on a caps update revokes the old epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_epoch: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caps: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1294,6 +1300,17 @@ pub mod mirror {
     pub const STOPPED: u32 = 11;
     /// Offered by phones that take input from the PC while mirrored.
     pub const INPUT: &str = "mirror.input";
+    /// Request-bound screen input with a per-PC owner grant and input epoch.
+    /// Unlike CORRELATION this also covers input, not only video/start/stop.
+    pub const INPUT_REQUEST: &str = "mirror.input.request";
+    /// Phone app windows implement exact start/stop/capture/input ownership
+    /// and cancellation during stream writes. Compatibility only: never an
+    /// owner grant, Stop rearm or capture permission.
+    pub const APP_WINDOWS_OWNED_V1: &str = "mirror.app_windows_owned_v1";
+    /// Per-PC phone-owner grant, never a globally advertised permission.
+    pub const CONTROL_ALLOWED: &str = "mirror.control.allowed";
+    /// The phone owner's durable Stop currently blocks this PC.
+    pub const CONTROL_STOPPED: &str = "mirror.control.stopped";
     /// Typed text in one message: at most this many bytes.
     pub const MAX_TEXT_BYTES: usize = 4096;
     pub const H264: &str = "h264";
@@ -1305,6 +1322,9 @@ pub mod mirror {
     pub const AUDIO_PLAYBACK: &str = "mirror.audio.playback";
     /// Offered by PCs that play a mirrored phone's sound.
     pub const LISTEN: &str = "mirror.listen";
+    /// Offered by phones and PCs that tag mirror requests and streams with
+    /// a request token and refuse stale-token streams ([`MirrorStart::request`]).
+    pub const CORRELATION: &str = "mirror.correlation";
     pub const OP_AUDIO: &str = "audio";
     /// 16-bit little-endian PCM, channels interleaved.
     pub const PCM: &str = "pcm_s16le";
@@ -1361,6 +1381,11 @@ pub struct MirrorStart {
     /// that offered it with `media.watch`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub watch: Option<String>,
+    /// Request generation: the requester's per-session token, echoed back in
+    /// the stream's config packets and in `mirror.stop`. Absent on requests
+    /// from peers that predate correlation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<u64>,
 }
 
 impl MirrorStart {
@@ -1394,11 +1419,25 @@ pub struct MirrorPower {
 }
 
 /// Which mirroring a `mirror.stop`, `mirror.keyframe` or `mirror.input` is
-/// about (its body, or part of it; missing means the screen).
+/// about (its body, or part of it; missing means the screen). `request`
+/// orders a stop against a replacement start: a stop for an older request
+/// than the one recorded is acknowledged but takes no action.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MirrorSession {
     #[serde(default)]
     pub session: u32,
+    /// The request this message belongs to, when the sender tags requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<u64>,
+}
+
+/// On the existing mirror.stop opcode, the sharing phone declined/ended the
+/// incoming request rather than asking this peer to stop capturing its screen.
+/// Only used after INPUT_REQUEST negotiation; old peers ignore unknown fields.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MirrorSourceStop {
+    #[serde(default)]
+    pub source_stopped: bool,
 }
 
 /// Body of `mirror.resize`: resize an app window's display (`session != 0`).
@@ -1407,6 +1446,9 @@ pub struct MirrorResize {
     pub session: u32,
     pub width: u32,
     pub height: u32,
+    /// Accepted app capture. Older senders omit it and cannot resize owned apps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<u64>,
 }
 
 impl MirrorResize {
@@ -1519,6 +1561,48 @@ pub fn mirror_input_envelope(
     Ok(env)
 }
 
+/// Exact source decline/end, using mirror.stop after INPUT_REQUEST negotiation.
+pub fn mirror_source_stop_envelope(
+    session: u32,
+    request: u64,
+) -> Result<crate::Envelope, crate::ProtocolError> {
+    let mut env =
+        crate::Envelope::new(types::MIRROR_STOP, &MirrorSession { session, request: Some(request) })?;
+    if let Some(ciborium::Value::Map(fields)) = env.b.as_mut() {
+        fields.push((ciborium::Value::Text("source_stopped".into()), ciborium::Value::Bool(true)));
+    }
+    Ok(env)
+}
+
+/// Optional fields on the existing mirror.input opcode. New safe control
+/// requires both fields; old envelopes deserialize without granting control.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MirrorInputOwner {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_epoch: Option<u64>,
+}
+
+/// Input for the exact screen/app request and owner-grant generation displayed.
+/// Reuses MIRROR_INPUT; peers must explicitly negotiate INPUT_REQUEST first.
+pub fn mirror_control_input_envelope(
+    input: &MirrorInput,
+    session: u32,
+    request: u64,
+    input_epoch: u64,
+) -> Result<crate::Envelope, crate::ProtocolError> {
+    let mut env = mirror_input_envelope(input, session)?;
+    if let Some(ciborium::Value::Map(fields)) = env.b.as_mut() {
+        fields.push((ciborium::Value::Text("request".into()), ciborium::Value::Integer(request.into())));
+        fields.push((
+            ciborium::Value::Text("input_epoch".into()),
+            ciborium::Value::Integer(input_epoch.into()),
+        ));
+    }
+    Ok(env)
+}
+
 /// Never prints typed text (protocol v0 §11).
 impl std::fmt::Debug for MirrorInput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1562,6 +1646,9 @@ pub struct MirrorConfig {
     /// Which mirroring this stream is (see [`MirrorStart::session`]).
     #[serde(default)]
     pub session: u32,
+    /// Which request this stream serves (see [`MirrorStart::request`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<u64>,
 }
 
 impl MirrorConfig {
@@ -4318,6 +4405,7 @@ mod tests {
             device: info(),
             caps: vec!["core.ping".into(), "device.battery".into()],
             power: PowerLevel::Elevated,
+            input_epoch: Some(42),
         };
         let env = Envelope::new(types::HELLO, &hello).unwrap();
         let back: Hello = Envelope::from_cbor(&env.to_cbor()).unwrap().expect_body(types::HELLO).unwrap();
@@ -5152,6 +5240,7 @@ mod tests {
             stay_awake: false,
             screen_off: false,
             watch: Some("Chrome".into()),
+            request: None,
         };
         assert!(screen.is_valid());
         // Watching is of the PC's screen session only, never with an app.
@@ -5166,6 +5255,14 @@ mod tests {
         ciborium::into_writer(&plain, &mut bytes).unwrap();
         let back: MirrorStart = ciborium::from_reader(bytes.as_slice()).unwrap();
         assert_eq!(back, plain);
+        // A tagged request round-trips; peers that predate correlation read
+        // it as absent.
+        let tagged = MirrorStart { request: Some(7), ..plain.clone() };
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&tagged, &mut bytes).unwrap();
+        let back: MirrorStart = ciborium::from_reader(bytes.as_slice()).unwrap();
+        assert_eq!(back, tagged);
+        assert_eq!(back.request, Some(7));
     }
 
     #[test]

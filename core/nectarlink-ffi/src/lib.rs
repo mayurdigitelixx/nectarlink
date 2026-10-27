@@ -1008,6 +1008,40 @@ pub enum VideoPacketKind {
     Keyframe,
 }
 
+/// Exact original phone input admission, retained through Android posting.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PhoneControlContext {
+    pub session: u32,
+    pub capture: u64,
+    pub request: u64,
+    pub generation: u64,
+    pub connection: u64,
+}
+
+impl From<core::MirrorControlContext> for PhoneControlContext {
+    fn from(value: core::MirrorControlContext) -> Self {
+        Self {
+            session: value.session,
+            capture: value.capture,
+            request: value.request,
+            generation: value.generation,
+            connection: value.connection,
+        }
+    }
+}
+
+impl From<PhoneControlContext> for core::MirrorControlContext {
+    fn from(value: PhoneControlContext) -> Self {
+        Self {
+            session: value.session,
+            capture: value.capture,
+            request: value.request,
+            generation: value.generation,
+            connection: value.connection,
+        }
+    }
+}
+
 /// The PC's mouse, keyboard, or gamepad on the mirrored screen. Positions are
 /// fractions of the screen (0 to 1).
 #[derive(Clone, PartialEq, uniffi::Enum)]
@@ -1151,16 +1185,24 @@ impl MirrorStream {
 }
 
 /// The bytes of a config packet for an H.264 stream of this size, for the
-/// screen (session 0) or an app window.
+/// screen (session 0) or an app window. `request` echoes the answered
+/// request's generation, when the requester tagged it.
 #[uniffi::export]
-pub fn mirror_config(width: u32, height: u32, session: u32) -> Vec<u8> {
-    core::MirrorConfig { codec: "h264".into(), width, height, session }.to_cbor()
+pub fn mirror_config(width: u32, height: u32, session: u32, request: Option<u64>) -> Vec<u8> {
+    core::MirrorConfig { codec: "h264".into(), width, height, session, request }.to_cbor()
 }
 
 /// The bytes of a config packet for a stream of `codec` (`"h264"`, `"h265"`, or `"av1"`).
+/// `request` echoes the answered request's generation, when the requester tagged it.
 #[uniffi::export]
-pub fn mirror_config_codec(codec: String, width: u32, height: u32, session: u32) -> Vec<u8> {
-    core::MirrorConfig { codec, width, height, session }.to_cbor()
+pub fn mirror_config_codec(
+    codec: String,
+    width: u32,
+    height: u32,
+    session: u32,
+    request: Option<u64>,
+) -> Vec<u8> {
+    core::MirrorConfig { codec, width, height, session, request }.to_cbor()
 }
 
 /// What a PC asked to mirror, and how (docs/protocol/mirror.md).
@@ -1180,6 +1222,9 @@ pub struct MirrorOptions {
     pub stay_awake: bool,
     /// Turn the phone's physical screen off while mirroring (`session == 0`, Elevated).
     pub screen_off: bool,
+    /// The request's generation, echoed back in the stream's config packets
+    /// (absent on requests from peers that predate correlation).
+    pub request: Option<u64>,
 }
 
 /// An app a PC can open in a window (docs/protocol/mirror.md).
@@ -2678,18 +2723,47 @@ pub trait Platform: Send + Sync {
     /// the sound). With `app` (and a `session` other than 0): run that app
     /// on a display of its own and stream it with `mirror_open`, its config
     /// packets carrying the session. False if it can't.
-    fn mirror_requested(&self, pc_id: String, options: MirrorOptions) -> bool;
+    fn mirror_requested(&self, pc_id: String, options: MirrorOptions, connection: u64, capture: u64) -> bool;
+    /// Explicit unnegotiated app route; no owned context is created.
+    fn mirror_app_requested_legacy(&self, pc_id: String, options: MirrorOptions, connection: u64) -> bool;
+    fn mirror_app_stop_requested_legacy(&self, pc_id: String, session: u32, connection: u64);
+    fn mirror_app_input_legacy(
+        &self, pc_id: String, session: u32, input: MirrorInputEvent, connection: u64, generation: u64,
+    );
     /// The PC stopped watching the screen (session 0) or an app window.
     fn mirror_stop_requested(&self, pc_id: String, session: u32);
+    fn mirror_stop_requested_owned(
+        &self,
+        pc_id: String,
+        session: u32,
+        request: Option<u64>,
+        connection: u64,
+        capture: u64,
+    );
     /// The PC needs a keyframe.
     fn mirror_keyframe_requested(&self, pc_id: String, session: u32);
     /// The PC resized an app window (`session` != 0) to `width × height`.
     fn mirror_resize_requested(&self, pc_id: String, session: u32, width: u32, height: u32);
+    /// Exact receiver-local capture; no input grant is implied.
+    fn mirror_resize_requested_owned(
+        &self,
+        pc_id: String,
+        width: u32,
+        height: u32,
+        context: PhoneControlContext,
+    );
     /// The PC updated `stay_awake` or `screen_off` while mirroring the screen (`session == 0`).
     fn mirror_power_requested(&self, pc_id: String, stay_awake: bool, screen_off: bool);
     /// The PC's mouse or keyboard on the mirrored screen (only while this
     /// phone offers `mirror.input`) or an app window. Return quickly.
     fn mirror_input(&self, pc_id: String, session: u32, input: MirrorInputEvent);
+    /// The PC's mouse or keyboard on the mirrored screen (session 0), admitted
+    /// under typing `generation`. Right before the OS sees it (after any post
+    /// to another thread), check `mirror_typing_current(pc_id, generation)`
+    /// and drop it when that's false. Return quickly.
+    fn mirror_screen_input(&self, pc_id: String, input: MirrorInputEvent, generation: u64);
+    /// Request/connection-bound phone control. Recheck context after posting.
+    fn mirror_control_input(&self, pc_id: String, input: MirrorInputEvent, context: PhoneControlContext);
     /// A PC asked for this phone's camera as a webcam: start streaming (or
     /// ask the user) and call `webcam_open`. False if it can't or the user
     /// declined.
@@ -2872,7 +2946,13 @@ impl core::Platform for PlatformAdapter {
             Err("the clipboard rejected it".into())
         }
     }
-    fn mirror_requested(&self, peer: &DeviceId, options: &core::MirrorStart) -> Result<(), String> {
+    fn mirror_requested_owned(
+        &self,
+        peer: &DeviceId,
+        options: &core::MirrorStart,
+        connection: u64,
+        capture: u64,
+    ) -> Result<(), String> {
         let options = MirrorOptions {
             max_size: options.max_size,
             fps: options.fps,
@@ -2882,12 +2962,33 @@ impl core::Platform for PlatformAdapter {
             app: options.app.clone(),
             stay_awake: options.stay_awake,
             screen_off: options.screen_off,
+            request: options.request,
         };
-        if self.0.mirror_requested(peer.to_string(), options) {
+        if self.0.mirror_requested(peer.to_string(), options, connection, capture) {
             Ok(())
         } else {
             Err("the phone couldn't".into())
         }
+    }
+    fn mirror_app_requested_legacy(
+        &self, peer: &DeviceId, options: &core::MirrorStart, connection: u64,
+    ) -> Result<(), String> {
+        let options = MirrorOptions {
+            max_size: options.max_size, fps: options.fps, bitrate: options.bitrate,
+            audio: options.audio, session: options.session, app: options.app.clone(),
+            stay_awake: options.stay_awake, screen_off: options.screen_off, request: options.request,
+        };
+        if self.0.mirror_app_requested_legacy(peer.to_string(), options, connection) {
+            Ok(())
+        } else { Err("the phone couldn't open the legacy app window".into()) }
+    }
+    fn mirror_app_stop_requested_legacy(&self, peer: &DeviceId, session: u32, connection: u64) {
+        self.0.mirror_app_stop_requested_legacy(peer.to_string(), session, connection);
+    }
+    fn mirror_app_input_legacy(
+        &self, peer: &DeviceId, session: u32, input: core::MirrorInput, connection: u64, generation: u64,
+    ) {
+        self.0.mirror_app_input_legacy(peer.to_string(), session, input.into(), connection, generation);
     }
     fn mirror_stop_requested(&self, peer: &DeviceId, session: u32) {
         self.0.mirror_stop_requested(peer.to_string(), session);
@@ -2898,11 +2999,41 @@ impl core::Platform for PlatformAdapter {
     fn mirror_resize_requested(&self, peer: &DeviceId, session: u32, width: u32, height: u32) {
         self.0.mirror_resize_requested(peer.to_string(), session, width, height);
     }
+    fn mirror_resize_requested_owned(
+        &self,
+        peer: &DeviceId,
+        width: u32,
+        height: u32,
+        context: core::MirrorControlContext,
+    ) {
+        self.0.mirror_resize_requested_owned(peer.to_string(), width, height, context.into());
+    }
     fn mirror_power_requested(&self, peer: &DeviceId, stay_awake: bool, screen_off: bool) {
         self.0.mirror_power_requested(peer.to_string(), stay_awake, screen_off);
     }
+    fn mirror_stop_requested_owned(
+        &self,
+        peer: &DeviceId,
+        session: u32,
+        request: Option<u64>,
+        connection: u64,
+        capture: u64,
+    ) {
+        self.0.mirror_stop_requested_owned(peer.to_string(), session, request, connection, capture);
+    }
     fn mirror_input(&self, peer: &DeviceId, session: u32, input: core::MirrorInput) {
         self.0.mirror_input(peer.to_string(), session, input.into());
+    }
+    fn mirror_screen_input(&self, peer: &DeviceId, input: core::MirrorInput, generation: u64) {
+        self.0.mirror_screen_input(peer.to_string(), input.into(), generation);
+    }
+    fn mirror_control_input(
+        &self,
+        peer: &DeviceId,
+        input: core::MirrorInput,
+        context: core::MirrorControlContext,
+    ) {
+        self.0.mirror_control_input(peer.to_string(), input.into(), context.into());
     }
     fn webcam_requested(&self, peer: &DeviceId, options: &core::WebcamStart) -> Result<(), String> {
         let options = WebcamOptions {
@@ -4012,6 +4143,103 @@ impl NectarlinkNode {
         .await
     }
 
+    /// Decline only this accepted incoming request; never a broad mirror.stop.
+    pub async fn mirror_decline_request(&self, pc_id: String, request: u64, connection: u64) -> Result<bool> {
+        let id = parse_id(&pc_id)?;
+        let node = self.node.clone();
+        self.run(async move { Ok(node.mirror_decline_request(id, request, connection).await?) }).await
+    }
+
+    /// The phone owner's Stop on `pc_id`'s typing. Synchronous: call it before
+    /// the Stop tap returns. From then on that PC's screen input is dropped,
+    /// even input already posted toward the OS. Returns the Stop's generation.
+    pub fn mirror_deny_typing(&self, pc_id: String) -> Result<u64> {
+        Ok(self.node.mirror_deny_typing(parse_id(&pc_id)?)?)
+    }
+
+    /// The phone owner's mirroring switch for `pc_id` (local UI only), with
+    /// `tapped_at` read from `mirror_typing_epoch` on the tap itself. Off then
+    /// on, both tapped after a Stop on that PC's typing, ends it; nothing else
+    /// does, and no tap made before the Stop does.
+    pub fn set_mirroring_enabled(&self, pc_id: String, enabled: bool, tapped_at: u64) -> Result<()> {
+        Ok(self.node.set_mirroring_enabled(parse_id(&pc_id)?, enabled, tapped_at)?)
+    }
+
+    /// Explicit local phone-owner grant; never ends a durable Stop.
+    pub fn set_phone_control_enabled(&self, pc_id: String, enabled: bool) -> Result<()> {
+        Ok(self.node.set_phone_control_enabled(parse_id(&pc_id)?, enabled)?)
+    }
+
+    pub fn mirror_connection_current(&self, pc_id: String, connection: u64) -> bool {
+        parse_id(&pc_id).is_ok_and(|id| self.node.mirror_connection_current(id, connection))
+    }
+
+    /// Original unnegotiated app capture only; no owned request/input grant.
+    pub fn mirror_legacy_app_current(&self, pc_id: String, session: u32, connection: u64) -> bool {
+        parse_id(&pc_id).is_ok_and(|id| self.node.mirror_legacy_app_current(id, session, connection))
+    }
+
+    pub fn mirror_legacy_app_input_current(
+        &self, pc_id: String, session: u32, connection: u64, generation: u64,
+    ) -> bool {
+        parse_id(&pc_id).is_ok_and(|id| self.node.mirror_legacy_app_input_current(id, session, connection, generation))
+    }
+
+    /// Capture identity for this accepted incoming view request, independent of input consent.
+    pub fn mirror_capture_context(&self, pc_id: String, request: u64) -> Option<PhoneControlContext> {
+        parse_id(&pc_id).ok().and_then(|id| self.node.mirror_capture_context(id, request)).map(Into::into)
+    }
+
+    pub fn mirror_capture_context_for_session(
+        &self,
+        pc_id: String,
+        session: u32,
+        request: u64,
+    ) -> Option<PhoneControlContext> {
+        parse_id(&pc_id)
+            .ok()
+            .and_then(|id| self.node.mirror_capture_context_for_session(id, session, request))
+            .map(Into::into)
+    }
+
+    pub fn mirror_capture_current(&self, pc_id: String, context: PhoneControlContext) -> bool {
+        parse_id(&pc_id).is_ok_and(|id| self.node.mirror_capture_current(id, context.into()))
+    }
+
+    pub async fn mirror_open_owned(
+        &self,
+        pc_id: String,
+        context: PhoneControlContext,
+    ) -> Result<Arc<MirrorStream>> {
+        let id = parse_id(&pc_id)?;
+        let node = self.node.clone();
+        self.run(async move { Ok(Arc::new(MirrorStream(node.mirror_open_owned(id, context.into()).await?))) })
+            .await
+    }
+
+    /// Recheck the original request, connection, grant and durable generation.
+    pub fn mirror_control_input_current(&self, pc_id: String, context: PhoneControlContext) -> bool {
+        parse_id(&pc_id).is_ok_and(|id| self.node.mirror_control_input_current(id, context.into()))
+    }
+
+    /// `pc_id`'s typing epoch now. Synchronous: the mirroring switch reads it
+    /// on the tap and passes it to `set_mirroring_enabled`.
+    pub fn mirror_typing_epoch(&self, pc_id: String) -> Result<u64> {
+        Ok(self.node.mirror_typing_epoch(parse_id(&pc_id)?))
+    }
+
+    /// Whether `pc_id`'s screen input admitted under `generation` may still
+    /// reach the OS; ask right before dispatching it. False for a bad ID.
+    pub fn mirror_typing_current(&self, pc_id: String, generation: u64) -> bool {
+        parse_id(&pc_id).is_ok_and(|id| self.node.mirror_typing_current(id, generation))
+    }
+
+    /// Whether the phone owner's typing fence currently stops `pc_id`.
+    /// Read by the phone's existing per-PC UI; this does not change the fence.
+    pub fn mirror_typing_stopped(&self, pc_id: String) -> Result<bool> {
+        Ok(self.node.mirror_typing_stopped(parse_id(&pc_id)?))
+    }
+
     /// Asks a paired PC to stream its screen to this phone (`mirror.start`, `session == 0`),
     /// or with `watch`, what that PC player plays, with its sound (Play on phone, after the
     /// PC offered it).
@@ -4035,6 +4263,7 @@ impl NectarlinkNode {
             stay_awake: false,
             screen_off: false,
             watch,
+            request: None,
         };
         self.run(async move { Ok(node.mirror_start(id, options).await?) }).await
     }

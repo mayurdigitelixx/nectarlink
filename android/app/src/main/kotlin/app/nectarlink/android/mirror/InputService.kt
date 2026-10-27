@@ -19,6 +19,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import app.nectarlink.android.NectarlinkApplication
 import app.nectarlink.core.MirrorInputEvent
 import app.nectarlink.core.TouchPhase
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 import kotlin.math.hypot
 
@@ -36,8 +37,13 @@ class InputService : AccessibilityService() {
     private val stroke = mutableListOf<Pair<Float, Float>>()
     private var downAt = 0L
     private var longPressFired = false
+    private var inputOwner: Any? = null
+    private var inputCurrent: () -> Boolean = { false }
+    private var inputGeneration = 0L
+    private val interruptFence = InputInterruptFence()
 
     private val longPressRunnable = Runnable {
+        if (!inputCurrent()) { clearPendingInput(); return@Runnable }
         if (stroke.isEmpty() || longPressFired) return@Runnable
         val (w, h) = screen()
         val points = stroke.map { (px, py) -> px * w to py * h }
@@ -55,7 +61,7 @@ class InputService : AccessibilityService() {
     private var scrollDy = 0f
     private var gestureInFlight = false
     private val flushScroll = Runnable { flushScroll() }
-    private val clearGestureInFlight = Runnable { onGestureFinished() }
+    private var clearGestureInFlight: Runnable? = null
 
     override fun onServiceConnected() {
         instance = this
@@ -63,6 +69,7 @@ class InputService : AccessibilityService() {
     }
 
     override fun onUnbind(intent: android.content.Intent?): Boolean {
+        clearPendingInput()
         main.removeCallbacksAndMessages(null)
         gestureInFlight = false
         instance = null
@@ -71,6 +78,7 @@ class InputService : AccessibilityService() {
     }
 
     override fun onDestroy() {
+        clearPendingInput()
         main.removeCallbacksAndMessages(null)
         gestureInFlight = false
         if (instance === this) instance = null
@@ -79,9 +87,13 @@ class InputService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
 
-    override fun onInterrupt() {}
+    override fun onInterrupt() {
+        interruptFence.interrupt()
+        clearPendingInput()
+    }
 
     private fun handle(input: MirrorInputEvent) {
+        if (!inputCurrent()) { clearPendingInput(); return }
         when (input) {
             is MirrorInputEvent.Touch -> touch(input.action, input.x, input.y)
             is MirrorInputEvent.Scroll -> scroll(input.x, input.y, input.dx, input.dy)
@@ -164,6 +176,7 @@ class InputService : AccessibilityService() {
 
     private fun flushScroll() {
         main.removeCallbacks(flushScroll)
+        if (!inputCurrent()) { clearPendingInput(); return }
         if (gestureInFlight) return
         val (w, h) = screen()
         val x = scrollX * w
@@ -178,38 +191,65 @@ class InputService : AccessibilityService() {
     }
 
     private fun gesture(path: Path, durationMs: Long) {
+        val current = inputCurrent
+        val owner = inputOwner
+        val generation = inputGeneration
+        if (!current()) { clearPendingInput(); return }
         val clampedDuration = durationMs.coerceAtLeast(1L)
         val description = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0, clampedDuration))
             .build()
         gestureInFlight = true
-        main.removeCallbacks(clearGestureInFlight)
-        main.postDelayed(clearGestureInFlight, maxOf(GESTURE_TIMEOUT_MS, clampedDuration + 150L))
+        clearGestureInFlight?.let { main.removeCallbacks(it) }
+        val timeout = Runnable { onGestureFinished(generation, owner, current) }
+        clearGestureInFlight = timeout
+        main.postDelayed(timeout, maxOf(GESTURE_TIMEOUT_MS, clampedDuration + 150L))
+        // Preserve the original owner even through a gathered scroll/long press.
+        if (!current()) { clearPendingInput(); return }
         val dispatched = dispatchGesture(
             description,
             object : GestureResultCallback() {
                 override fun onCompleted(gestureDescription: GestureDescription?) {
-                    onGestureFinished()
+                    onGestureFinished(generation, owner, current)
                 }
 
                 override fun onCancelled(gestureDescription: GestureDescription?) {
-                    onGestureFinished()
+                    onGestureFinished(generation, owner, current)
                 }
             },
             main,
         )
         if (!dispatched) {
             Log.i(TAG, "a gesture wasn't played")
-            onGestureFinished()
+            onGestureFinished(generation, owner, current)
         }
     }
 
-    private fun onGestureFinished() {
-        main.removeCallbacks(clearGestureInFlight)
+    private fun onGestureFinished(generation: Long, owner: Any?, current: () -> Boolean) {
+        if (inputGeneration != generation || inputOwner != owner) return
+        clearGestureInFlight?.let { main.removeCallbacks(it) }
+        clearGestureInFlight = null
         gestureInFlight = false
-        if (scrollDx != 0f || scrollDy != 0f) {
-            flushScroll()
-        }
+        if (!current()) { clearPendingInput(); return }
+        if (scrollDx != 0f || scrollDy != 0f) flushScroll()
+    }
+
+    /** Retire only this service's queued input; already dispatched OS work
+     * cannot be recalled. A stale completion cannot flush the next owner's scroll. */
+    private fun clearPendingInput() {
+        inputGeneration++
+        main.removeCallbacks(longPressRunnable)
+        main.removeCallbacks(flushScroll)
+        clearGestureInFlight?.let { main.removeCallbacks(it) }
+        clearGestureInFlight = null
+        stroke.clear()
+        scrollDx = 0f
+        scrollDy = 0f
+        longPressFired = false
+        gestureInFlight = false
+        pendingText = null
+        inputOwner = null
+        inputCurrent = { false }
     }
 
     /** The screen's size in pixels, as it's turned now. */
@@ -228,13 +268,14 @@ class InputService : AccessibilityService() {
     // ---- Keys and text ----
 
     private fun key(key: String) {
+        if (!inputCurrent()) { clearPendingInput(); return }
         when (key) {
             "back" -> performGlobalAction(GLOBAL_ACTION_BACK)
             "home" -> performGlobalAction(GLOBAL_ACTION_HOME)
             "recents" -> performGlobalAction(GLOBAL_ACTION_RECENTS)
             "notifications" -> performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)
             "enter" -> focused()?.let { node ->
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && inputCurrent()) {
                     node.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
                 }
             }
@@ -262,7 +303,9 @@ class InputService : AccessibilityService() {
                 val nextNewline = text.indexOf('\n', end)
                 Edit(text, if (nextNewline >= 0) (nextNewline + 1).coerceAtMost(text.length) else text.length)
             }
-            "tab" -> focused()?.focusSearch(android.view.View.FOCUS_FORWARD)?.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+            "tab" -> focused()?.focusSearch(android.view.View.FOCUS_FORWARD)?.let { node ->
+                if (inputCurrent()) node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+            }
         }
     }
 
@@ -296,6 +339,7 @@ class InputService : AccessibilityService() {
             node.textSelectionEnd.takeIf { it in start..text.length } ?: start
         }
         val result = change(text, start, end) ?: return
+        if (!inputCurrent()) { clearPendingInput(); return }
         pendingText = result.text
         pendingCursor = result.cursor
         pendingAt = now
@@ -305,6 +349,7 @@ class InputService : AccessibilityService() {
                 Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, result.text) },
             )
         }
+        if (!inputCurrent()) { clearPendingInput(); return }
         node.performAction(
             AccessibilityNodeInfo.ACTION_SET_SELECTION,
             Bundle().apply {
@@ -363,10 +408,21 @@ class InputService : AccessibilityService() {
         /** Whether the user turned it on (and Android has it running). */
         val running: Boolean get() = instance != null
 
-        /** The PC's input; ignored while the service is off. */
-        fun handle(input: MirrorInputEvent) {
+        /**
+         * The PC's input; ignored while the service is off, and dropped on the main thread
+         * unless [stillCurrent] holds right before it's performed.
+         */
+        fun handle(input: MirrorInputEvent, stillCurrent: () -> Boolean, owner: Any? = null) {
             val service = instance ?: return
-            service.main.post { service.handle(input) }
+            val interruptGeneration = service.interruptFence.snapshot()
+            service.main.post {
+                if (!service.interruptFence.isCurrent(interruptGeneration)) return@post
+                if (instance !== service || !stillCurrent()) return@post
+                if (service.inputOwner != owner || !service.inputCurrent()) service.clearPendingInput()
+                service.inputOwner = owner
+                service.inputCurrent = { instance === service && stillCurrent() }
+                service.handle(input)
+            }
         }
 
         /** Whether it's turned on in Settings (it may not be running yet). */
@@ -417,3 +473,16 @@ internal fun filterDragPoints(
 internal fun swipeDurationMs(heldMs: Long): Long =
     heldMs.coerceIn(InputService.SWIPE_MIN_MS, InputService.SWIPE_MAX_MS)
 
+
+/** Reject handler work queued before Accessibility interrupted this service. */
+internal class InputInterruptFence {
+    private val generation = AtomicLong(0L)
+
+    fun snapshot(): Long = generation.get()
+
+    fun interrupt() {
+        generation.incrementAndGet()
+    }
+
+    fun isCurrent(snapshot: Long): Boolean = generation.get() == snapshot
+}

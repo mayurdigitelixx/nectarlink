@@ -60,6 +60,7 @@ capability is missing.
 | `mirror.virtual_display` | Runs apps on displays of their own, shown in windows on the PC ([mirroring](mirror.md)) | Elevated, Android 11+ |
 | `mirror.audio` | Streams all audio while mirrored | Elevated |
 | `mirror.audio.playback` | Streams audio from apps that allow playback capture | app update |
+| `mirror.correlation` | Tags mirror requests and streams with a generation; refuses stale-token streams where the peer offers it too ([mirroring](mirror.md)) | app update |
 | `toggles.read` | Shares quick settings state ([toggles](toggles.md)) | app update |
 | `toggles.ringer` | Changes the ringer mode between `ring` and `vibrate` ([toggles](toggles.md)) | app update |
 | `toggles.volume` | Changes the media volume ([toggles](toggles.md)) | app update |
@@ -88,6 +89,7 @@ capability is missing.
 | `toggles.show` | Shows a phone's quick settings and sends toggle changes ([toggles](toggles.md)) | app update |
 | `mirror.view` | Shows a phone's screen ([mirroring](mirror.md)) | app update |
 | `mirror.listen` | Plays a mirrored phone's sound ([mirroring](mirror.md)) | app update |
+| `mirror.correlation` | Tags mirror requests and streams with a generation; refuses stale-token streams where the peer offers it too ([mirroring](mirror.md)) | app update |
 | `files.browse` | Lets a paired phone browse and fetch its files | app update |
 | `storage.mount` | Mounts a paired phone's shared storage in File Explorer ([storage](storage.md)) | app update |
 | `input.inject` | Accepts pointer, keyboard and presentation input ([remote input](remote.md)) | app update |

@@ -50,14 +50,19 @@ class AppDisplay(
         var surface: Surface? = null
         val data = DataOutputStream(out.buffered(1 shl 16))
         try {
-            val (firstCodec, firstSurface) = createEncoder(curW, curH)
-            codec = firstCodec
-            surface = firstSurface
-            val made = if (fullScreen) {
-                createMirrorDisplay(curW, curH, curDpi, firstSurface)
-            } else {
-                createDisplay(curW, curH, curDpi, firstSurface)
+            val made = synchronized(this) {
+                // EOF/Stop may win before this helper thread starts running.
+                if (!running) return
+                val (firstCodec, firstSurface) = createEncoder(curW, curH)
+                codec = firstCodec
+                surface = firstSurface
+                if (fullScreen) {
+                    createMirrorDisplay(curW, curH, curDpi, firstSurface)
+                } else {
+                    createDisplay(curW, curH, curDpi, firstSurface)
+                }
             }
+            val firstCodec = checkNotNull(codec)
             display = made
             displayId = if (fullScreen) 0 else made.display.displayId
             if (!fullScreen) {
@@ -113,6 +118,7 @@ class AppDisplay(
         }
     }
 
+    @Synchronized
     fun stop() {
         running = false
     }
@@ -285,7 +291,10 @@ class AppDisplay(
             ?: arrayOf("-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER", "-p", pkg)
         val command = arrayOf("am", "start", "--display", display.toString(), "--windowingMode", "1") + target +
             arrayOf("-f", (FLAG_NEW_TASK or FLAG_MULTIPLE_TASK).toString())
-        val process = Runtime.getRuntime().exec(command)
+        val process = synchronized(this) {
+            if (!running) return
+            Runtime.getRuntime().exec(command)
+        }
         val said = process.inputStream.bufferedReader().readText() + process.errorStream.bufferedReader().readText()
         process.waitFor()
         if (said.contains("Error", ignoreCase = true) || said.contains("Warning", ignoreCase = true)) {

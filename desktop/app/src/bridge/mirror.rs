@@ -28,11 +28,14 @@ pub mod qobject {
         #[qml_element]
         #[qml_singleton]
         /// The windows, as JSON: `[{ key, device, session, name, title,
-        /// phase ("asking", "showing", "ended"), reason, canControl, sound,
+        /// phase ("asking", "showing", "ended"), reason, canControl,
+        /// controlReason, canRequestControl, viewOnly, sound,
         /// app }]`.
         #[qproperty(QString, windows)]
         /// The user turned the phones' sound off on this PC.
         #[qproperty(bool, muted)]
+        /// Whether this host build admits app windows (not an input grant).
+        #[qproperty(bool, app_windows_supported, cxx_name = "appWindowsSupported")]
         /// The phone whose apps [`apps`] lists.
         #[qproperty(QString, apps_device, cxx_name = "appsDevice")]
         /// Its apps, as JSON: `[{ pkg, label, icon }]` (icon: a file URL or "").
@@ -164,6 +167,7 @@ pub mod qobject {
 pub struct MirrorRust {
     windows: QString,
     muted: bool,
+    app_windows_supported: bool,
     apps_device: QString,
     apps: QString,
     recent_apps: QString,
@@ -188,23 +192,25 @@ impl cxx_qt::Initialize for qobject::Mirror {
 
 impl qobject::Mirror {
     fn refresh(mut self: Pin<&mut Self>) {
+        self.as_mut().set_app_windows_supported(mirror::APP_WINDOWS);
         let host = crate::core_host::host();
         let hub = &host.hub;
         let data_dir = &host.data_dir;
         let windows: Vec<serde_json::Value> = mirror::windows()
             .into_iter()
             .map(|(window, shown)| {
+                let control_reason = mirror::control_reason(window);
                 let (control, can_screen_off, name) = hub.read(|s| {
-                    // The screen needs control turned on; app windows are Elevated already.
-                    let feature = if window.session == MIRROR_SCREEN {
-                        "mirroring.control"
-                    } else {
-                        "mirroring.app_windows"
-                    };
                     let matrix = s.matrices.get(&window.device);
-                    let control = matrix.and_then(|m| m.state(feature)) == Some(FeatureState::Available);
-                    let can_screen_off = matrix.and_then(|m| m.state("mirroring.app_windows"))
-                        == Some(FeatureState::Available);
+                    let legacy_feature = if window.session == MIRROR_SCREEN {
+                        "mirroring.control"
+                    } else { "mirroring.app_windows" };
+                    let control = control_reason == "available"
+                        || (!cfg!(target_os = "macos") && control_reason == "unsupported"
+                            && matrix.and_then(|m| m.state(legacy_feature)) == Some(FeatureState::Available));
+                    let can_screen_off = mirror::APP_WINDOWS
+                        && matrix.and_then(|m| m.state("mirroring.app_windows"))
+                            == Some(FeatureState::Available);
                     (control, can_screen_off, s.name_of(&window.device).unwrap_or_default())
                 });
                 let (phase, reason) = match shown.phase {
@@ -231,8 +237,12 @@ impl qobject::Mirror {
                     "app": shown.app.is_some(),
                     "phase": phase,
                     "reason": reason,
+                    "viewOnly": window.session == MIRROR_SCREEN && control_reason == "unsupported",
                     "canControl": control,
+                    "controlReason": control_reason,
+                    "canRequestControl": false,
                     "sound": window.session == MIRROR_SCREEN && mirror::has_sound(&window.device),
+                    "canRecord": !cfg!(target_os = "macos"),
                     "recording": mirror::is_recording(&window),
                     "recordingStartedMs": mirror::recording_started_ms(&window),
                     "stayAwake": mirror::stay_awake(&window.device),

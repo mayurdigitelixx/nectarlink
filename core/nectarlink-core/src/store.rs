@@ -797,6 +797,97 @@ impl Store {
         })
     }
 
+    /// The local phone owner's mirroring typing fence. It shares this node's
+    /// existing identity-scoped store so a Node restart cannot forget a Stop.
+    pub(crate) fn mirror_typing_fence(&self) -> Result<Option<String>> {
+        self.with(|c| {
+            c.query_row("SELECT value FROM meta WHERE key = 'mirror_typing_fence'", [], |r| r.get(0))
+                .optional()
+        })
+    }
+
+    pub(crate) fn compare_and_set_mirror_typing_fence(
+        &self,
+        expected: Option<&str>,
+        value: &str,
+    ) -> Result<()> {
+        let changed = self.with(|c| match expected {
+            Some(expected) => c.execute(
+                "UPDATE meta SET value = ?1 WHERE key = 'mirror_typing_fence' AND value = ?2",
+                params![value, expected],
+            ),
+            None => c.execute(
+                "INSERT INTO meta (key, value) VALUES ('mirror_typing_fence', ?1)
+                 ON CONFLICT(key) DO NOTHING",
+                [value],
+            ),
+        })?;
+        if changed != 1 {
+            return Err(Error::Internal("mirror typing fence ownership changed".into()));
+        }
+        Ok(())
+    }
+
+    /// A request token never repeats after a Node restart with this identity.
+    /// Keep the existing request maps; only their sequence lives in Store.
+    pub(crate) fn next_mirror_request(&self) -> Result<u64> {
+        self.with(|c| {
+            let tx = c.unchecked_transaction()?;
+            let value: Option<String> = tx.query_row(
+                "SELECT value FROM meta WHERE key = 'mirror_next_request'", [], |row| row.get(0),
+            ).optional()?;
+            let request = match value {
+                Some(value) => value.parse::<u64>().ok().filter(|value| *value != 0).ok_or(rusqlite::Error::InvalidQuery)?,
+                None => 1,
+            };
+            let next = request.checked_add(1).ok_or(rusqlite::Error::InvalidQuery)?;
+            tx.execute(
+                "INSERT INTO meta (key, value) VALUES ('mirror_next_request', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [next.to_string()],
+            )?;
+            tx.commit()?;
+            Ok(request)
+        })
+    }
+
+    /// One phone-owner grant transition and its invalidating typing epoch.
+    /// The same CAS protects retained old Nodes; neither row commits alone.
+    pub(crate) fn compare_and_set_phone_control_grant(
+        &self,
+        expected: Option<&str>,
+        value: &str,
+        peer: &DeviceId,
+        enabled: bool,
+    ) -> Result<()> {
+        let committed = self.with(|c| {
+            let tx = c.unchecked_transaction()?;
+            let changed = match expected {
+                Some(expected) => tx.execute(
+                    "UPDATE meta SET value = ?1 WHERE key = 'mirror_typing_fence' AND value = ?2",
+                    params![value, expected],
+                )?,
+                None => tx.execute(
+                    "INSERT INTO meta (key, value) VALUES ('mirror_typing_fence', ?1) ON CONFLICT(key) DO NOTHING",
+                    [value],
+                )?,
+            };
+            if changed != 1 {
+                return Ok(false);
+            }
+            tx.execute(
+                "INSERT INTO peer_toggles (peer, toggle, enabled) VALUES (?1, 'phone_control', ?2)
+                 ON CONFLICT(peer, toggle) DO UPDATE SET enabled = excluded.enabled",
+                params![peer.as_bytes().as_slice(), i64::from(enabled)],
+            )?;
+            tx.commit()?;
+            Ok(true)
+        })?;
+        if !committed {
+            return Err(Error::Internal("mirror typing fence ownership changed".into()));
+        }
+        Ok(())
+    }
+
     /// Removes a device. Returns whether it existed.
     pub fn remove_peer(&self, id: &DeviceId) -> Result<bool> {
         let peer_str = id.to_string();

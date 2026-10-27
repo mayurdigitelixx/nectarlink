@@ -20,6 +20,7 @@ windows of their own (§6).
 | `mirror.audio` | phone | Shares all its sound while mirrored (planned, Elevated) |
 | `mirror.virtual_display` | phone | Runs apps on displays of their own, shown in windows on the PC (Elevated, Android 11+) |
 | `mirror.listen` | PC | Plays a mirrored phone's sound |
+| `mirror.correlation` | both | Tags mirror requests and streams with a generation; refuses stale-token streams where both peers offer it |
 
 Both devices must allow it: the `mirroring` device toggle, on by default,
 on each side.
@@ -31,8 +32,9 @@ On the control stream.
 ```
 t = "mirror.start"     id = n   b = { max_size: uint, fps: uint, bitrate: uint, ? audio: bool,
                                      ? session: uint, ? app: text,
-                                     ? stay_awake: bool, ? screen_off: bool, ? watch: text }
-t = "mirror.stop"      id = n   b = { ? session: uint }
+                                     ? stay_awake: bool, ? screen_off: bool, ? watch: text,
+                                     ? request: uint }
+t = "mirror.stop"      id = n   b = { ? session: uint, ? request: uint }
 t = "mirror.power"              b = { ? stay_awake: bool, ? screen_off: bool }
 t = "mirror.keyframe"           b = { ? session: uint }
 t = "mirror.resize"             b = { session: uint, width: uint, height: uint }
@@ -47,7 +49,11 @@ means 0, so PCs and phones that predate sessions work as before.
 
 - `mirror.start` (PC → phone): show me your screen, its longer side at most
   `max_size` pixels, at most `fps` frames a second, aiming for `bitrate`
-  bits a second, and with `audio` (default false), its sound too. For the
+  bits a second, and with `audio` (default false), its sound too. `request`
+  is the requester's per-session generation: the phone records it when it
+  accepts, echoes it in the answering stream's config packets, and ignores
+  a `mirror.stop` tagged for any older generation. Peers that predate
+  correlation leave it out, and old peers ignore it. For the
   phone's screen (`session` 0), `stay_awake` keeps the phone's screen from
   timing out while mirrored, and `screen_off` (Elevated) turns the phone's
   physical display panel off while the mirror keeps running. The
@@ -60,6 +66,9 @@ means 0, so PCs and phones that predate sessions work as before.
   offered it with `media.watch` ([media.md](media.md) §4).
 - `mirror.stop` (either way): stop. The PC stops reading the video stream;
   the phone stops sharing, restores normal display power, and finishes it.
+  With correlation, the stop carries the `request` generation it ends; a
+  stop for a superseded generation is acknowledged but changes nothing, so
+  a delayed stop can't end a replacement mirroring.
 - `mirror.power` (PC → phone): update `stay_awake` and `screen_off` while
   mirroring the phone's screen (`session` 0). Not answered.
 - `mirror.keyframe` (PC → phone): the decoder lost its place; send a
@@ -85,7 +94,10 @@ u64 time      // capture time in microseconds, big-endian (only differences mean
 ```
 
 - **config**: the stream's format, CBOR `{ codec: "h264", width: uint,
-  height: uint }`. First, and again whenever it changes (the phone turned).
+  height: uint, ? request: uint }`. First, and again whenever it changes (the phone turned).
+  With correlation, `request` echoes the answered request's generation; where
+  both peers offer `mirror.correlation`, a stream whose generation doesn't
+  answer the live request is refused (the PC resets it).
 - **frame**: one H.264 access unit (Annex B) that depends on earlier ones.
 - **keyframe**: an access unit that starts fresh (an IDR picture), with its
   SPS and PPS before it.
@@ -176,8 +188,9 @@ window of its own, beside whatever the phone's screen shows:
   runs that app on a display of its own and streams it like the screen,
   with no prompt (Elevated was the user's consent). Its video stream's
   config packets carry `session` (the config's CBOR gains `? session:
-  uint`). Sound isn't sent for app windows. `BAD_MESSAGE` when `app` and
-  `session` don't go together.
+  uint`) and echo `request` when the request was tagged. Sound isn't sent
+  for app windows. `BAD_MESSAGE` when `app` and `session` don't go
+  together.
 - `mirror.input` gains `? session: uint`: input for an app window goes to
   its display. App windows take input whenever the phone offers
   `mirror.virtual_display`; the screen still needs `mirror.input`.
@@ -216,3 +229,19 @@ picture.
 The screen and sound are never recorded or logged by either side. Android shows that
 the screen is being shared (in the status bar), and the user can stop it
 there, from the phone's notification, or from the PC.
+
+### Owned phone control and app captures
+
+`mirror.input.request` adds a phone-owner grant for each paired desktop and a durable
+input epoch advertised in `hello` / `hello.update`. Input echoes the accepted
+request and epoch; the phone rechecks its original connection, capture and live
+video stream immediately before dispatch. A Stop invalidates queued input and
+survives process restart. A remote request cannot grant control or clear Stop.
+
+`mirror.app_windows_owned_v1` distinguishes a producer that retains each app's
+original Node, connection, request and capture through helper startup, video,
+input, resize and teardown. The viewer retains the corresponding `MirrorView`
+for close and resize; a delayed close cannot stop a replacement app capture.
+The Android producer keeps this capability disabled until its complete app
+permission policy and native implementation are qualified. Older peers retain
+the existing Windows/Linux viewer path; macOS requires this owned contract.

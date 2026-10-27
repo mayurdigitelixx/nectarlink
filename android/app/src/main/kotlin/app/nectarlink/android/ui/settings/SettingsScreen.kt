@@ -106,8 +106,10 @@ fun SettingsScreen(
     onPairNew: () -> Unit,
     onAccessChanged: () -> Unit,
     updater: AppUpdater,
+    onSetPhoneControlEnabled: (pcId: String, enabled: Boolean) -> Unit,
     onSetStorageEnabled: (pcId: String, enabled: Boolean) -> Unit = { _, _ -> },
     onSetMicEnabled: (pcId: String, enabled: Boolean) -> Unit = { _, _ -> },
+    onSetMirroringEnabled: (pcId: String, enabled: Boolean) -> Unit = { _, _ -> },
     onAddSafFolder: (Uri) -> Unit = {},
     onRemoveSafFolder: (String) -> Unit = {},
     onSetClipboardHistoryEnabled: (Boolean) -> Unit = {},
@@ -540,6 +542,50 @@ fun SettingsScreen(
                                         onCheckedChange = { enabled -> onSetMicEnabled(device.id, enabled) },
                                         colors = app.nectarlink.android.ui.theme.nectarSwitchColors(),
                                         modifier = Modifier.semantics { contentDescription = micToggleTitle },
+                                    )
+                                }
+                                val mirroringToggleTitle = stringResource(R.string.mirroring_pc_toggle)
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                    Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                                        Text(mirroringToggleTitle, style = MaterialTheme.typography.bodyMedium)
+                                        Text(
+                                            stringResource(R.string.mirroring_pc_toggle_hint),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                    Switch(
+                                        checked = device.mirroringEnabled,
+                                        onCheckedChange = { enabled -> onSetMirroringEnabled(device.id, enabled) },
+                                        colors = app.nectarlink.android.ui.theme.nectarSwitchColors(),
+                                        modifier = Modifier.semantics { contentDescription = mirroringToggleTitle },
+                                    )
+                                }
+                                if (device.kind == app.nectarlink.core.DeviceKind.DESKTOP || device.kind == app.nectarlink.core.DeviceKind.LAPTOP) {
+                                    val controlToggleTitle = stringResource(R.string.phone_control_pc_toggle)
+                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                                            Text(controlToggleTitle, style = MaterialTheme.typography.bodyMedium)
+                                            Text(
+                                                stringResource(R.string.phone_control_pc_toggle_hint),
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                        Switch(
+                                            checked = device.phoneControlEnabled,
+                                            enabled = state.status is app.nectarlink.android.core.CoreStatus.Ready,
+                                            onCheckedChange = { enabled -> onSetPhoneControlEnabled(device.id, enabled) },
+                                            colors = app.nectarlink.android.ui.theme.nectarSwitchColors(),
+                                            modifier = Modifier.semantics { contentDescription = controlToggleTitle },
+                                        )
+                                    }
+                                }
+                                if (device.id in state.typingStoppedPcIds) {
+                                    Text(
+                                        stringResource(R.string.keyboard_recovery_required),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.error,
                                     )
                                 }
                             }

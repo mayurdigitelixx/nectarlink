@@ -66,9 +66,17 @@ pub(crate) fn local_hello(shared: &Shared) -> Hello {
         device: local.device.clone(),
         caps: local.capabilities(),
         power: local.power,
+        input_epoch: None,
     }
 }
 
+/// [`local_hello`] with the storage caps this device actually admits to `peer`.
+pub(crate) fn local_hello_for(shared: &Shared, peer: &DeviceId) -> Hello {
+    let mut hello = local_hello(shared);
+    hello.caps = shared.capabilities_for_peer(peer, &hello.caps);
+    hello.input_epoch = shared.phone_control_epoch_for(peer);
+    hello
+}
 /// Runs the dialer side of the handshake on a fresh connection.
 pub(crate) async fn handshake_dialer(
     conn: &Connection,
@@ -125,6 +133,10 @@ async fn check_versions(
 /// the connection (call [`Session::close`]).
 pub(crate) struct Session {
     pub peer: DeviceId,
+    /// Unique in this process, including retained/replaced Node instances.
+    pub(crate) mirror_control_id: u64,
+    /// This connection's latest peer-owner input epoch; never persisted/reused.
+    pub(crate) mirror_input_epoch: AtomicU64,
     /// Who opened the connection; used to resolve duplicate connections.
     pub dialer: DeviceId,
     pub conn: Connection,
@@ -141,6 +153,19 @@ pub(crate) struct Session {
     /// Artwork keys sent to this device (docs/protocol/media.md).
     sent_art: crate::notifications::SentIcons,
     pub(crate) cancel: CancellationToken,
+    pub(crate) capability_announce: Mutex<CapabilityAnnounce>,
+}
+
+#[derive(Default)]
+pub(crate) struct CapabilityAnnounce {
+    pub(crate) dirty: bool,
+    pub(crate) with_power: bool,
+    pub(crate) flushing: bool,
+}
+
+pub(crate) enum TryEnqueue {
+    Full,
+    Closed,
 }
 
 impl std::fmt::Debug for Session {
@@ -160,6 +185,7 @@ impl Session {
         conn: Connection,
         dialer: DeviceId,
         (send, recv): (SendStream, RecvStream),
+        input_epoch: u64,
         on_end: impl FnOnce(Arc<Session>) + Send + 'static,
     ) -> Arc<Session> {
         let peer = crate::device_id(&conn.remote_id());
@@ -171,8 +197,14 @@ impl Session {
             .find(|p| p.is_selected())
             .map_or(0, |p| p.rtt().as_millis().min(u128::from(u32::MAX)) as u32);
         let (outbox, outbox_rx) = mpsc::channel(OUTBOX_CAPACITY);
+        static NEXT_CONTROL_ID: AtomicU64 = AtomicU64::new(1);
+        let mirror_control_id = NEXT_CONTROL_ID
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .unwrap_or(0);
         let session = Arc::new(Session {
             peer,
+            mirror_control_id,
+            mirror_input_epoch: AtomicU64::new(input_epoch),
             dialer,
             conn,
             outbox,
@@ -186,6 +218,7 @@ impl Session {
             sent_icons: Default::default(),
             sent_art: Default::default(),
             cancel: shared.cancel.child_token(),
+            capability_announce: Mutex::new(CapabilityAnnounce::default()),
         });
 
         let weak = Arc::downgrade(shared);
@@ -298,6 +331,17 @@ impl Session {
     /// Queues a one-way message.
     pub async fn send(&self, env: Envelope) -> Result<()> {
         self.outbox.send(env).await.map_err(|_| Error::Offline)
+    }
+
+    pub(crate) fn try_enqueue(&self, env: Envelope) -> std::result::Result<(), TryEnqueue> {
+        self.outbox.try_send(env).map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => TryEnqueue::Full,
+            mpsc::error::TrySendError::Closed(_) => TryEnqueue::Closed,
+        })
+    }
+
+    pub(crate) async fn reserve(&self) -> Result<mpsc::Permit<'_, Envelope>> {
+        self.outbox.reserve().await.map_err(|_| Error::Offline)
     }
 
     /// Best-effort non-blocking enqueue for loss-tolerant real-time media frames
@@ -475,6 +519,9 @@ async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: Envelope) -> 
             let caps = update.caps.map(crate::features::sanitize_capabilities);
             let power = update.power.map(PowerLevel::effective);
             let had_caps = caps.is_some();
+            if had_caps {
+                session.mirror_input_epoch.store(update.input_epoch.unwrap_or(0), Ordering::Release);
+            }
             if caps.is_some() || power.is_some() {
                 shared.store.update_capabilities(&peer, caps.as_ref(), power)?;
             }

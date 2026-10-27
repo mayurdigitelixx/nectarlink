@@ -75,7 +75,10 @@ pub use localsend::{
 };
 pub use media::{MediaAction, MediaError};
 pub use mic::{MicSink, TOGGLE as MIC_TOGGLE};
-pub use mirror::{MirrorSend, MirrorSink, MirrorStream, PC_MIRROR_TOGGLE};
+pub use mirror::{
+    MirrorControl, MirrorControlContext, MirrorSend, MirrorSink, MirrorStream, MirrorView, PC_MIRROR_TOGGLE,
+    PHONE_CONTROL_TOGGLE,
+};
 pub use nectarlink_protocol::messages::clip::{
     IMAGE_TYPES as CLIP_IMAGE_TYPES, MAX_IMAGE_BYTES as CLIP_MAX_IMAGE_BYTES,
 };
@@ -107,10 +110,13 @@ pub use nectarlink_protocol::{
         media_watch::{MAX_READ as MEDIA_WATCH_MAX_READ, STREAM as MEDIA_STREAM, WATCH as MEDIA_WATCH},
         mic::{LISTEN as MIC_LISTEN, STREAM as MIC_STREAM},
         mirror::{
-            AUDIO as MIRROR_AUDIO, AUDIO_PLAYBACK as MIRROR_AUDIO_PLAYBACK, AV1 as MIRROR_AV1,
-            CAPTURE as MIRROR_CAPTURE, H264 as MIRROR_H264, H265 as MIRROR_H265, INPUT as MIRROR_INPUT,
-            LISTEN as MIRROR_LISTEN, MAX_TEXT_BYTES as MIRROR_MAX_TEXT_BYTES, PCM as MIRROR_PCM,
-            SCREEN as MIRROR_SCREEN, VIEW as MIRROR_VIEW, VIRTUAL_DISPLAY as MIRROR_VIRTUAL_DISPLAY,
+            APP_WINDOWS_OWNED_V1 as MIRROR_APP_WINDOWS_OWNED_V1, AUDIO as MIRROR_AUDIO,
+            AUDIO_PLAYBACK as MIRROR_AUDIO_PLAYBACK, AV1 as MIRROR_AV1, CAPTURE as MIRROR_CAPTURE,
+            CONTROL_ALLOWED as MIRROR_CONTROL_ALLOWED, CONTROL_STOPPED as MIRROR_CONTROL_STOPPED,
+            CORRELATION as MIRROR_CORRELATION, H264 as MIRROR_H264, H265 as MIRROR_H265,
+            INPUT as MIRROR_INPUT, INPUT_REQUEST as MIRROR_INPUT_REQUEST, LISTEN as MIRROR_LISTEN,
+            MAX_TEXT_BYTES as MIRROR_MAX_TEXT_BYTES, PCM as MIRROR_PCM, SCREEN as MIRROR_SCREEN,
+            VIEW as MIRROR_VIEW, VIRTUAL_DISPLAY as MIRROR_VIRTUAL_DISPLAY,
         },
         mirror_keys, notify_limits, parse_mac,
         photos::{

@@ -143,6 +143,10 @@ pub fn compute_capabilities(
         }
         caps.push(nectarlink_core::MIC_LISTEN.into());
     }
+    #[cfg(target_os = "macos")]
+    caps.push(nectarlink_core::MIRROR_VIEW.into());
+    caps.push(nectarlink_core::MIRROR_CORRELATION.into());
+    caps.push(nectarlink_core::MIRROR_INPUT_REQUEST.into());
     #[cfg(any(windows, target_os = "linux"))]
     let mut pc_mirror_enabled = crate::pc_mirror::is_active();
     #[cfg(any(windows, target_os = "linux"))]
@@ -434,7 +438,9 @@ mod tests {
     fn macos_advertises_only_supported_capabilities() {
         let caps = compute_capabilities(None);
         // Ensure unsupported features on macOS are never advertised
-        assert!(!caps.contains(&"mirror.view".into()), "macOS must not advertise mirror.view");
+        assert!(caps.contains(&nectarlink_core::MIRROR_VIEW.into()));
+        assert!(caps.contains(&nectarlink_core::MIRROR_CORRELATION.into()));
+        assert!(caps.contains(&nectarlink_core::MIRROR_INPUT_REQUEST.into()));
         assert!(!caps.contains(&"mirror.listen".into()), "macOS must not advertise mirror.listen");
         assert!(!caps.contains(&"media.control".into()), "macOS must not advertise media.control");
         assert!(

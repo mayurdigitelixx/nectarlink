@@ -147,6 +147,10 @@ data class Device(
     val storageEnabled: Boolean = false,
     /** Whether this PC may ask for this phone's microphone (on by default). */
     val micEnabled: Boolean = true,
+    /** Whether this PC may view this phone's screen (on by default). */
+    val mirroringEnabled: Boolean = true,
+    /** Explicit phone-owner grant for this trusted PC, independent of viewing and Stop. */
+    val phoneControlEnabled: Boolean = false,
 ) {
     /** A paired phone or tablet rather than a PC. */
     val isAndroid: Boolean
@@ -250,6 +254,12 @@ data class CoreState(
     val localsendPeers: List<LocalSendPeer> = emptyList(),
     /** IDs of paired PCs currently typing on this phone without mirroring. */
     val keyboardFromPc: Set<String> = emptySet(),
+    /**
+     * Paired peers whose phone-owner typing fence currently denies input.
+     * Rehydrated from core on Node start; remote marker/capability events do
+     * not clear it. A successful owner rearm or unpair removes an ID.
+     */
+    val typingStoppedPcIds: Set<String> = emptySet(),
     /** Vibrant seed color (`0xRRGGBB`) extracted from currently playing phone or PC media artwork. */
     val activeMediaColor: UInt? = null,
 ) {
@@ -274,6 +284,8 @@ data class CoreState(
         paired: List<PairedDevice>,
         storageAllowed: Set<String> = emptySet(),
         micOff: Set<String> = emptySet(),
+        mirroringOff: Set<String> = emptySet(),
+        phoneControlAllowed: Set<String> = emptySet(),
     ): CoreState {
         val prevById = devices.associateBy { it.id }
         return copy(
@@ -284,6 +296,8 @@ data class CoreState(
                     deckState = prev?.deckState,
                     storageEnabled = if (p.id in storageAllowed) true else prev?.storageEnabled ?: false,
                     micEnabled = p.id !in micOff,
+                    mirroringEnabled = p.id !in mirroringOff,
+                    phoneControlEnabled = p.id in phoneControlAllowed,
                 )
             }.sortedWith(deviceOrder),
         )
@@ -296,6 +310,15 @@ data class CoreState(
         update(id) { it.copy(micEnabled = enabled) }.copy(
             micRequestFrom = if (!enabled && micRequestFrom == id) null else micRequestFrom,
         )
+
+    fun withMirroringEnabled(id: String, enabled: Boolean): CoreState =
+        update(id) { it.copy(mirroringEnabled = enabled) }
+
+    fun withPhoneControlEnabled(id: String, enabled: Boolean): CoreState =
+        update(id) { it.copy(phoneControlEnabled = enabled) }
+
+    fun withTypingStopped(id: String, stopped: Boolean): CoreState =
+        copy(typingStoppedPcIds = if (stopped) typingStoppedPcIds + id else typingStoppedPcIds - id)
 
     fun withStorageEnabled(id: String, enabled: Boolean): CoreState =
         update(id) { it.copy(storageEnabled = enabled) }.copy(
@@ -324,6 +347,7 @@ data class CoreState(
             webcamRequest = if (webcamRequest?.pcId == event.id) null else webcamRequest,
             micRequestFrom = if (micRequestFrom == event.id) null else micRequestFrom,
             keyboardFromPc = keyboardFromPc - event.id,
+            typingStoppedPcIds = typingStoppedPcIds - event.id,
         )
         is Event.LinkChanged -> {
             val prev = device(event.id)

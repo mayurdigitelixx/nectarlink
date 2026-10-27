@@ -26,6 +26,7 @@ import app.nectarlink.android.companion.PcCompanion
 import app.nectarlink.android.contacts.PhoneContacts
 import app.nectarlink.android.elevated.Elevated
 import app.nectarlink.android.mirror.AppWindows
+import app.nectarlink.android.mirror.LegacyAppWindows
 import app.nectarlink.android.mirror.InputService
 import app.nectarlink.android.mirror.MirrorRequests
 import app.nectarlink.android.photos.RecentPhotos
@@ -63,6 +64,7 @@ import app.nectarlink.core.TransferStatus
 import app.nectarlink.core.initLogging
 import app.nectarlink.android.files.transferTitle
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
@@ -136,8 +138,8 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         sms = { sms },
         toggles = { toggles },
         storage = { storage },
-        onMirror = { pc, request ->
-            MirrorRequests.show(this.context, request, _state.value.nameOf(pc).orEmpty())
+        onMirror = { pc, request, connection ->
+            MirrorRequests.show(this.context, request, _state.value.nameOf(pc).orEmpty(), connection)
         },
         onWebcam = { pc, request ->
             val session = WebcamService.session.value
@@ -150,9 +152,37 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                 true
             }
         },
-        appWindows = AppWindows(this.context, scope, open = { pc -> mirrorOpen(pc) }, nameOf = { pc -> _state.value.nameOf(pc).orEmpty() }),
+        appWindows = AppWindows(
+            this.context, scope,
+            owner = { pc, session, request, connection, capture ->
+                val receivingNode = node
+                val accepted = runCatching { receivingNode?.mirrorCaptureContextForSession(pc, session, request) }.getOrNull()
+                if (receivingNode != null && node === receivingNode && accepted != null && accepted.connection == connection && accepted.capture == capture) {
+                    receivingNode to accepted
+                } else null
+            },
+            currentNode = { original -> node === original },
+            nameOf = { pc -> _state.value.nameOf(pc).orEmpty() },
+        ),
+        legacyAppWindows = LegacyAppWindows(
+            this.context, scope,
+            owner = { pc, connection -> node?.takeIf { it.mirrorConnectionCurrent(pc, connection) } },
+            currentNode = { original -> node === original },
+            nameOf = { pc -> _state.value.nameOf(pc).orEmpty() },
+        ),
         nameOf = { pc -> _state.value.nameOf(pc).orEmpty() },
         onKeyboardFromPc = { pc, on -> setKeyboardFromPc(pc, on) },
+        typingCurrent = { pc, generation -> node?.mirrorTypingCurrent(pc, generation) == true },
+        controlCurrent = { pc, owner ->
+            // Capture the receiving Node once; a posted check must never bind
+            // the old event to whichever Node replaced it in the meantime.
+            val receivingNode = node
+            val current: () -> Boolean = {
+                receivingNode != null && node === receivingNode &&
+                    receivingNode.mirrorControlInputCurrent(pc, owner)
+            }
+            current
+        },
     )
     private val storage = PhoneStorage(this.context) { path ->
         enqueueNotificationOp { it.storageChanged(path) }
@@ -427,7 +457,18 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                 node = started
                 isRunning = true
             }
-            val devices = runCatching { started.pairedDevices() }.getOrDefault(emptyList())
+            val devicesResult = runCatching { started.pairedDevices() }
+            val devices = devicesResult.getOrDefault(emptyList())
+            if (devicesResult.isSuccess) {
+                synchronized(opsLock) {
+                    if (node === started) {
+                        val stopped = devices.mapNotNull { pc ->
+                            pc.id.takeIf { runCatching { started.mirrorTypingStopped(it) }.getOrDefault(true) }
+                        }.toSet()
+                        _state.update { it.copy(typingStoppedPcIds = stopped) }
+                    }
+                }
+            }
             val pcToggles = perPcToggles(started, devices.map { it.id })
             val clipHistEnabled = runCatching { started.clipboardHistoryEnabled() }.getOrDefault(true)
             val clipHist = if (clipHistEnabled) {
@@ -447,7 +488,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             localsendMulticast?.runCatching { if (lsEnabled) acquire() else release() }
             pruneOldTempCaches()
             _state.update {
-                it.withDevices(devices, pcToggles.storageAllowed, pcToggles.micOff).copy(
+                it.withDevices(devices, pcToggles.storageAllowed, pcToggles.micOff, pcToggles.mirroringOff, pcToggles.phoneControlAllowed).copy(
                     status = CoreStatus.Ready(started.deviceId()),
                     sendQueue = initialQueue,
                     clipboardHistoryEnabled = clipHistEnabled,
@@ -716,7 +757,12 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                             localNetwork = localNetwork,
                             devices = if (pcToggles != null) {
                                 it.devices.map { d ->
-                                    d.copy(storageEnabled = d.id in pcToggles.storageAllowed, micEnabled = d.id !in pcToggles.micOff)
+                                    d.copy(
+                                        storageEnabled = d.id in pcToggles.storageAllowed,
+                                        micEnabled = d.id !in pcToggles.micOff,
+                                        mirroringEnabled = d.id !in pcToggles.mirroringOff,
+                                        phoneControlEnabled = d.id in pcToggles.phoneControlAllowed,
+                                    )
                                 }
                             } else {
                                 it.devices
@@ -1131,18 +1177,25 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         }
     }
 
-    /** Which PCs may browse this phone's storage, and which may not ask for its microphone. */
-    private class PerPcToggles(val storageAllowed: Set<String>, val micOff: Set<String>)
+    /**
+     * Which PCs may browse this phone's storage, which may not ask for its microphone, and
+     * which may not mirror its screen (only read here; nothing is turned on).
+     */
+    private class PerPcToggles(val storageAllowed: Set<String>, val micOff: Set<String>, val mirroringOff: Set<String>, val phoneControlAllowed: Set<String>)
 
     private fun perPcToggles(node: NectarlinkNode, ids: List<String>): PerPcToggles {
         val storage = mutableSetOf<String>()
         val micOff = mutableSetOf<String>()
+        val mirroringOff = mutableSetOf<String>()
+        val phoneControlAllowed = mutableSetOf<String>()
         for (id in ids) {
             val toggles = runCatching { node.deviceToggles(id) }.getOrNull() ?: continue
             if (toggles.any { it.name == PhoneStorage.TOGGLE_NAME && it.enabled }) storage += id
             if (toggles.any { it.name == app.nectarlink.android.mic.MicService.TOGGLE_NAME && !it.enabled }) micOff += id
+            if (toggles.any { it.name == MIRRORING_TOGGLE && !it.enabled }) mirroringOff += id
+            if (toggles.any { it.name == PHONE_CONTROL_TOGGLE && it.enabled }) phoneControlAllowed += id
         }
-        return PerPcToggles(storage, micOff)
+        return PerPcToggles(storage, micOff, mirroringOff, phoneControlAllowed)
     }
 
     fun clearWebcamRequest(pcId: String? = null) {
@@ -1836,8 +1889,12 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             (if (context.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)) listOf("camera.capture") else emptyList()) +
             (if (InputService.running || Elevated.running) listOf("mirror.input") else emptyList()) +
             (if (Elevated.running) listOf("clip.read.auto") else emptyList()) +
+            listOf("mirror.correlation", "mirror.input.request") +
             // Apps in windows of their own run on displays the Elevated helper makes.
-            (if (Elevated.running && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) listOf("mirror.virtual_display") else emptyList()) +
+            (if (Elevated.running && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                listOf("mirror.virtual_display") +
+                    if (OWNED_APP_WINDOWS_QUALIFIED) listOf("mirror.app_windows_owned_v1") else emptyList()
+            } else emptyList()) +
             // Asked for when a PC wants the sound, or streamed via Elevated helper.
             (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q || Elevated.running) listOf("mirror.audio.playback") else emptyList())
 
@@ -2409,12 +2466,108 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
 
     /** Stops remote keyboard typing from `pcId` and notifies the PC. */
     fun stopKeyboardFromPc(pcId: String) {
-        _state.update { it.copy(keyboardFromPc = it.keyboardFromPc - pcId) }
-        val currentNode = node ?: return
+        val stop = synchronized(opsLock) {
+            node?.let { currentNode ->
+                val result = runCatching { currentNode.mirrorDenyTyping(pcId) }
+                val typingStopped = runCatching { currentNode.mirrorTypingStopped(pcId) }.getOrDefault(true)
+                _state.update { state ->
+                    val withoutKeyboard =
+                        if (result.isSuccess) state.copy(keyboardFromPc = state.keyboardFromPc - pcId) else state
+                    withoutKeyboard.withTypingStopped(pcId, typingStopped)
+                }
+                currentNode to result
+            }
+        }
+        if (stop == null) {
+            _messages.tryEmit(context.getString(R.string.keyboard_stop_wait_for_node))
+            return
+        }
+        val (currentNode, result) = stop
+        if (result.isFailure) {
+            Log.w(TAG, "keyboard stop could not be persisted")
+            _messages.tryEmit(context.getString(R.string.keyboard_stop_not_saved))
+        }
         scope.launch(Dispatchers.IO) {
             runCatching { currentNode.mirrorStop(pcId, 0u) }
         }
     }
+
+    /**
+     * Lets [pcId] view this phone's screen, or not (on by default). Control also needs
+     * the separate default-off phone-owner grant. Phone
+     * owner's switch only: turning it off and then on, both after a Stop on that PC's typing,
+     * ends that Stop. Taps made before a Stop never end it.
+     */
+    fun setMirroringEnabled(pcId: String, enabled: Boolean) {
+        _state.update { it.withMirroringEnabled(pcId, enabled) }
+        // Read here on the tapping thread, where Stop runs too: a Stop tapped after this keeps
+        // this tap from ending it, however late the write below runs. Keep the Node too, so a
+        // queued write cannot be replayed against the replacement Node after lifecycle restart.
+        val tappedNode = node
+        val tappedAt = tappedNode?.let { runCatching { it.mirrorTypingEpoch(pcId) }.getOrNull() } ?: 0uL
+        // Undispatched, each tap takes its place on the fair mutex on the tapping thread, so the
+        // core sees the switch in the order it was tapped: a quick off then on stays off → on.
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            mirroringSwitch.withLock {
+                withContext(Dispatchers.IO) {
+                    startJob?.join()
+                    if (tappedNode != null) {
+                        synchronized(opsLock) {
+                            if (node === tappedNode) {
+                                val result = runCatching { tappedNode.setMirroringEnabled(pcId, enabled, tappedAt) }
+                                result.onFailure { Log.w(TAG, "can't change the mirroring toggle", it) }
+                                // Keep the warning through OFF; clear it only
+                                // after an explicit ON and a fresh fence read.
+                                if (enabled && result.isSuccess) {
+                                    runCatching { tappedNode.mirrorTypingStopped(pcId) }
+                                        .onSuccess { stopped ->
+                                            _state.update { it.withTypingStopped(pcId, stopped) }
+                                        }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun mirrorConnectionCurrent(pcId: String, connection: ULong): Boolean =
+        synchronized(opsLock) { node?.mirrorConnectionCurrent(pcId, connection) == true }
+
+    /** Only the current accepted capture owner; this never grants input. */
+    fun mirrorCaptureContext(pcId: String, request: ULong): app.nectarlink.core.PhoneControlContext? =
+        synchronized(opsLock) { node?.mirrorCaptureContext(pcId, request) }
+
+    /** Compose with the consent owner: cancel only the exact consumed prompt. */
+    fun declineMirrorRequest(pcId: String, request: ULong, connection: ULong) {
+        val decliningNode = node ?: return
+        scope.launch {
+            synchronized(opsLock) { if (node !== decliningNode) return@launch }
+            runCatching { decliningNode.mirrorDeclineRequest(pcId, request, connection) }
+                .onFailure { _messages.tryEmit(describe(it as? NectarlinkException ?: throw it)) }
+        }
+    }
+
+    /** Explicit phone-owner grant. Synchronous/current-Node like Stop; no
+     * queued grant is replayed into a later Node and this never rearms Stop. */
+    fun setPhoneControlEnabled(pcId: String, enabled: Boolean) {
+        val tappedNode = node ?: return
+        synchronized(opsLock) {
+            if (node !== tappedNode) return
+            val result = runCatching { tappedNode.setPhoneControlEnabled(pcId, enabled) }
+            val actual = runCatching {
+                tappedNode.deviceToggles(pcId).any { it.name == PHONE_CONTROL_TOGGLE && it.enabled }
+            }.getOrDefault(false)
+            _state.update { it.withPhoneControlEnabled(pcId, actual) }
+            val stopped = runCatching { tappedNode.mirrorTypingStopped(pcId) }.getOrDefault(true)
+            _state.update { it.withTypingStopped(pcId, stopped) }
+            result.onFailure { _messages.tryEmit(describe(it as? NectarlinkException ?: throw it)) }
+        }
+    }
+
+    /** The owner's mirroring switch writes, one at a time in tap order. */
+    private val mirroringSwitch = Mutex()
 
     /** Runs a command on the node, turning errors into a message. */
     private fun command(block: suspend (NectarlinkNode) -> Unit) {
@@ -2442,6 +2595,12 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
 
     private companion object {
         const val TAG = "Nectarlink"
+        /** The core's per-PC view toggle and the existing phone-owner Stop rearm. */
+        // Root flips this build gate only after the paired native/helper contract
+        // and ABI are qualified; this is never a permission or a runtime setting.
+        private const val OWNED_APP_WINDOWS_QUALIFIED = false
+        const val MIRRORING_TOGGLE = "mirroring"
+        const val PHONE_CONTROL_TOGGLE = "phone_control"
         /** Offered while notification access is granted (docs/protocol/capabilities.md). */
         val NOTIFICATION_CAPABILITIES = listOf("notify.mirror", "notify.reply", "notify.live")
         /** Sharing this phone's players, which also needs notification access. */

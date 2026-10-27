@@ -1991,6 +1991,7 @@ mod imp {
                             width: dst_w,
                             height: dst_h,
                             session: nectarlink_core::MIRROR_SCREEN,
+                            request: options.request,
                         };
                         if matches!(sender.send(PacketKind::Config, 0, cfg.to_cbor()), MirrorSend::Closed) {
                             break;

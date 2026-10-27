@@ -14,13 +14,11 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.Display
-import android.view.WindowManager
 import app.nectarlink.core.MirrorSendResult
 import app.nectarlink.core.MirrorStream
 import app.nectarlink.core.VideoPacketKind
 import app.nectarlink.core.mirrorConfigCodec
-import kotlin.math.max
-import kotlin.math.min
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The screen as H.264 / H.265 / AV1 for a PC (docs/protocol/mirror.md): the projection
@@ -37,6 +35,8 @@ internal class ScreenEncoder(
     private val fps: Int,
     private val bitrate: Int,
     preferredCodec: String = "h264",
+    /** The answered request's generation, echoed in the stream's config (`null` predates correlation). */
+    private val request: ULong? = null,
     private val onEnded: () -> Unit,
 ) {
     private val context = context.applicationContext
@@ -46,16 +46,16 @@ internal class ScreenEncoder(
 
     @Volatile private var running = true
     @Volatile private var keyframeWanted = false
-    @Volatile private var resizeWanted = false
-    @Volatile private var size: Size = screenSize()
+    /** Bumped on every default-display change; the encoder rechecks the size whenever it moves. */
+    private val displayChanges = AtomicLong()
+    /** API34+ projection callbacks describe the captured content, already in its current orientation. */
+    @Volatile private var capturedContent: Pair<Int, Int>? = null
 
     private data class Size(val width: Int, val height: Int, val dpi: Int)
 
     private val rotation = object : DisplayManager.DisplayListener {
         override fun onDisplayChanged(displayId: Int) {
-            if (displayId != Display.DEFAULT_DISPLAY) return
-            val now = screenSize()
-            if (now.width != size.width || now.height != size.height) resizeWanted = true
+            if (displayId == Display.DEFAULT_DISPLAY) displayChanges.incrementAndGet()
         }
         override fun onDisplayAdded(displayId: Int) {}
         override fun onDisplayRemoved(displayId: Int) {}
@@ -64,6 +64,13 @@ internal class ScreenEncoder(
     fun start() {
         displays.registerDisplayListener(rotation, main)
         Thread(::run, "screen-encoder").start()
+    }
+
+    /** Called on main only after MirrorService admits this exact projection/capture epoch. */
+    fun capturedContentResized(width: Int, height: Int) {
+        if (!running || width <= 0 || height <= 0) return
+        capturedContent = width to height
+        displayChanges.incrementAndGet()
     }
 
     /** Stops (the encoder thread ends and calls `onEnded`). */
@@ -80,8 +87,9 @@ internal class ScreenEncoder(
         var display: VirtualDisplay? = null
         try {
             while (running) {
-                size = screenSize()
-                resizeWanted = false
+                // Read before the size, so a change landing after the read is seen by drain.
+                val seen = displayChanges.get()
+                val size = screenSize()
                 val (activeCodecName, codec) = encoder(size)
                 val surface = codec.createInputSurface()
                 codec.start()
@@ -98,8 +106,8 @@ internal class ScreenEncoder(
                 val closed = stream.send(
                     VideoPacketKind.CONFIG,
                     0u,
-                    mirrorConfigCodec(activeCodecName, size.width.toUInt(), size.height.toUInt(), 0u),
-                ) == MirrorSendResult.CLOSED || drain(codec)
+                    mirrorConfigCodec(activeCodecName, size.width.toUInt(), size.height.toUInt(), 0u, request),
+                ) == MirrorSendResult.CLOSED || drain(codec, size, seen)
                 runCatching { codec.stop() }
                 codec.release()
                 surface.release()
@@ -117,12 +125,19 @@ internal class ScreenEncoder(
     }
 
     /** Sends what the encoder makes until the size changes (false) or it's over (true). */
-    private fun drain(codec: MediaCodec): Boolean {
+    private fun drain(codec: MediaCodec, size: Size, seen: Long): Boolean {
         val info = MediaCodec.BufferInfo()
         // The parameter sets, sent again with each keyframe so the PC can
         // start from any of them.
         var parameters = ByteArray(0)
-        while (running && !resizeWanted) {
+        var checked = seen
+        while (running) {
+            val changes = displayChanges.get()
+            if (changes != checked) {
+                checked = changes
+                val now = screenSize()
+                if (now != size) return false
+            }
             if (keyframeWanted) {
                 keyframeWanted = false
                 codec.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) })
@@ -190,7 +205,10 @@ internal class ScreenEncoder(
 
     /** The screen's size scaled to fit `maxSize`, in multiples of 16 (what encoders like). */
     private fun screenSize(): Size {
-        val (w, h, dpi) = computeScreenSize(context, maxSize)
+        val captured = capturedContent
+        val (w, h, dpi) = captured?.let {
+            fitCapturedContent(it.first, it.second, maxSize, liveDisplayMetrics(context).densityDpi)
+        } ?: computeScreenSize(context, maxSize)
         return Size(w, h, dpi)
     }
 
@@ -219,18 +237,25 @@ internal class ScreenEncoder(
         }
 
         fun computeScreenSize(context: Context, maxSize: Int): Triple<Int, Int, Int> {
-            val windows = context.getSystemService(WindowManager::class.java)
-            val (w, h) = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                windows.maximumWindowMetrics.bounds.let { it.width() to it.height() }
-            } else {
-                val metrics = android.util.DisplayMetrics()
+            // Query the live logical display instead of an application's cached
+            // WindowManager configuration, which can retain the cover-screen shape.
+            val metrics = liveDisplayMetrics(context)
+            return fitCapturedContent(metrics.widthPixels, metrics.heightPixels, maxSize, metrics.densityDpi)
+                ?: error("screen has no usable dimensions")
+        }
+
+        private fun liveDisplayMetrics(context: Context): android.util.DisplayMetrics {
+            val display = context.getSystemService(DisplayManager::class.java)
+                .getDisplay(Display.DEFAULT_DISPLAY)
+            val metrics = android.util.DisplayMetrics()
+            if (display != null) {
                 @Suppress("DEPRECATION")
-                windows.defaultDisplay.getRealMetrics(metrics)
-                metrics.widthPixels to metrics.heightPixels
+                display.getRealMetrics(metrics)
             }
-            val scale = min(1.0, maxSize.toDouble() / max(w, h))
-            fun fit(v: Int) = max(16, ((v * scale) / 16).toInt() * 16)
-            return Triple(fit(w), fit(h), context.resources.displayMetrics.densityDpi)
+            if (metrics.widthPixels <= 0 || metrics.heightPixels <= 0 || metrics.densityDpi <= 0) {
+                metrics.setTo(context.resources.displayMetrics)
+            }
+            return metrics
         }
     }
 }

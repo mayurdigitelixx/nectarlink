@@ -44,15 +44,26 @@ const OPTIONS: MirrorStart = MirrorStart {
     max_size: 1920,
     fps: 60,
     bitrate: 8_000_000,
-    audio: true,
+    // A Mac doesn't offer mirror.listen: its core refuses the phone's sound.
+    audio: !cfg!(target_os = "macos"),
     session: MIRROR_SCREEN,
     app: None,
     stay_awake: false,
     screen_off: false,
     watch: None,
+    // Placeholder: core `mirror::start` stamps the live generation.
+    request: None,
 };
+/// Mac host capture, automatic clipboard/Flow and reverse host control stay
+/// unavailable. Phone input has separate negotiated owner/request guards.
+pub(crate) const VIEW_ONLY: bool = cfg!(target_os = "macos");
+/// App windows require the negotiated owned-capture capability and phone grant.
+pub(crate) const APP_WINDOWS: bool = true;
 /// Packets waiting for the decoder, at most (about two seconds).
 const BACKLOG: usize = 120;
+/// Packets in a row that may fail to decode, each retried from a fresh
+/// keyframe, before the mirroring ends.
+const DECODE_FAILURES: u32 = 3;
 /// How often decode times are logged.
 const STATS_EVERY: Duration = Duration::from_secs(10);
 /// How long an in-window status notice stays visible.
@@ -160,6 +171,24 @@ impl SavedWindows {
     }
 }
 
+#[derive(Debug, Clone)]
+struct RequestNode {
+    node: nectarlink_core::Node,
+    app_view: Option<nectarlink_core::MirrorView>,
+}
+
+impl RequestNode {
+    async fn stop(self, window: Window) {
+        if window.session == MIRROR_SCREEN {
+            self.node.mirror_stop(window.device, window.session).await;
+        } else if let Some(view) = self.app_view {
+            let _ = view.stop_if_current().await;
+        } else {
+            self.node.mirror_stop(window.device, window.session).await;
+        }
+    }
+}
+
 #[derive(Debug)]
 struct State {
     windows: HashMap<Window, Shown>,
@@ -167,8 +196,13 @@ struct State {
     active_window: Option<Window>,
     /// Last clipboard text synced on window focus so unchanged text isn't resent.
     last_focus_clip: Option<String>,
-    /// Phones whose sound is coming in.
-    sound: HashSet<DeviceId>,
+    /// Phones whose sound is coming in, and the sink that owns each: a
+    /// stream that was replaced must not clear the flag of the one that
+    /// replaced it.
+    sound: HashMap<DeviceId, u64>,
+    /// The next sound generation, one per sink: a later sink owns a device's
+    /// sound over an earlier one.
+    sound_generation: u64,
     /// Phones kept awake while mirroring (their screen or app windows).
     stay_awake: HashSet<DeviceId>,
     /// Phones whose physical screen is turned off while mirroring (their
@@ -178,6 +212,21 @@ struct State {
     keyboard_device: Option<DeviceId>,
     /// Short transient feedback notices per mirror window: `(text, shown_at, token)`.
     notices: HashMap<Window, (String, Instant, u64)>,
+    /// The video stream each window shows, by number: a window key is
+    /// reused, so a decoder still finishing an older stream mustn't end or
+    /// clear the one after it. Cleared when the window closes or asks again.
+    streams: HashMap<Window, u64>,
+    /// Exact request owner, retained until close or the next request.
+    requests: HashMap<Window, u64>,
+    /// Original Node for each local request, never reacquired on input dequeue.
+    request_nodes: HashMap<Window, RequestNode>,
+    /// Actual core wire token echoed by the authenticated phone video stream.
+    control_requests: HashMap<Window, u64>,
+    /// Closed sessions whose STOP must precede any replacement START.
+    pending_stops: HashMap<Window, RequestNode>,
+    /// The first-frame deadline each opened screen stream is held to; a
+    /// stream that opens again replaces it.
+    first_frames: HashMap<Window, u64>,
     apps: HashMap<DeviceId, Apps>,
     saved: SavedWindows,
 }
@@ -189,6 +238,94 @@ impl State {
             .iter()
             .any(|(w, shown)| w.device == *device && matches!(shown.phase, Phase::Asking | Phase::Showing))
     }
+
+    fn set_phase(&mut self, window: Window, phase: Phase) {
+        let showing = matches!(phase, Phase::Showing);
+        if matches!(phase, Phase::Ended(_)) {
+            self.request_nodes.remove(&window);
+            self.control_requests.remove(&window);
+        }
+        if showing && self.active_window.is_none() {
+            self.active_window = Some(window);
+        } else if !showing && self.active_window == Some(window) {
+            self.active_window = self
+                .windows
+                .iter()
+                .find(|(w, shown)| **w != window && matches!(shown.phase, Phase::Showing))
+                .map(|(w, _)| *w);
+        }
+        if let Some(shown) = self.windows.get_mut(&window) {
+            shown.phase = phase;
+        }
+    }
+
+    fn owns_request(&self, window: &Window, request: u64) -> bool {
+        self.requests.get(window) == Some(&request)
+    }
+
+    /// Ends `window` with a reason when `deadline` of `request` runs out
+    /// while it shows no picture yet; nothing after a frame, a close, a newer
+    /// request or a stream that opened again. Its stream is let go in the
+    /// same step, so a picture still on its way can't show in the ended window.
+    fn end_without_first_frame(&mut self, window: Window, request: u64, deadline: u64) -> bool {
+        if self.first_frames.get(&window) != Some(&deadline) {
+            return false;
+        }
+        self.first_frames.remove(&window);
+        if !self.owns_request(&window, request)
+            || !self.windows.get(&window).is_some_and(|w| w.phase == Phase::Showing)
+            || latest_bitmap(&window).is_some()
+        {
+            return false;
+        }
+        self.streams.remove(&window);
+        self.set_phase(
+            window,
+            Phase::Ended(Some(tr!(
+                "Mirror",
+                "No picture arrived from the phone. Keep the phone unlocked while it shares its screen, then try again."
+            ))),
+        );
+        true
+    }
+
+    /// Whether `stream` is still the one `window` shows.
+    fn shows(&self, window: &Window, stream: u64) -> bool {
+        self.streams.get(window) == Some(&stream)
+    }
+
+    /// A sink takes over a device's sound (see `claim_sound_owner`).
+    fn claim_sound(&mut self, device: DeviceId, generation: u64, playing: bool) {
+        claim_sound_owner(&mut self.sound, device, generation, playing);
+    }
+
+    /// A sink lets go of a device's sound (see `release_sound_owner`).
+    fn release_sound(&mut self, device: DeviceId, generation: u64) {
+        release_sound_owner(&mut self.sound, device, generation);
+    }
+}
+
+/// A sink takes over a device's sound: it owns the flag from now on, and
+/// only it may clear it. A sink older than the owner changes nothing: a
+/// late format on a replaced stream must not take the flag back, nor
+/// clear the newer owner's flag when its own player fails.
+fn claim_sound_owner(sound: &mut HashMap<DeviceId, u64>, device: DeviceId, generation: u64, playing: bool) {
+    if sound.get(&device).is_some_and(|&owner| owner > generation) {
+        return;
+    }
+    if playing {
+        sound.insert(device, generation);
+    } else {
+        sound.remove(&device);
+    }
+}
+
+/// A sink lets go of a device's sound. Only the owner may clear the flag:
+/// a sink that was replaced must not hide the sound that replaced it.
+fn release_sound_owner(sound: &mut HashMap<DeviceId, u64>, device: DeviceId, generation: u64) {
+    if sound.get(&device) == Some(&generation) {
+        sound.remove(&device);
+    }
 }
 
 impl Default for State {
@@ -197,11 +334,18 @@ impl Default for State {
             windows: HashMap::new(),
             active_window: None,
             last_focus_clip: None,
-            sound: HashSet::new(),
+            sound: HashMap::new(),
+            sound_generation: 0,
             stay_awake: HashSet::new(),
             screen_off: HashSet::new(),
             keyboard_device: None,
             notices: HashMap::new(),
+            streams: HashMap::new(),
+            requests: HashMap::new(),
+            request_nodes: HashMap::new(),
+            control_requests: HashMap::new(),
+            pending_stops: HashMap::new(),
+            first_frames: HashMap::new(),
             apps: HashMap::new(),
             saved: SavedWindows::load(),
         }
@@ -214,6 +358,14 @@ static MUTED: AtomicBool = AtomicBool::new(false);
 static NEXT_SESSION: AtomicU32 = AtomicU32::new(1);
 /// Monotonic token for auto-clearing window notices.
 static NOTICE_SEQ: AtomicU64 = AtomicU64::new(1);
+/// The next video stream's number (see `State::streams`).
+static NEXT_STREAM: AtomicU64 = AtomicU64::new(1);
+/// The next request owner, distinct even when a window closes and reopens.
+static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
+/// The next first-frame deadline (see `State::first_frames`).
+static NEXT_DEADLINE: AtomicU64 = AtomicU64::new(1);
+// Keep stops ordered with requests reaching the phone.
+static TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 type FrameMap = HashMap<Window, (u32, u32, Arc<Vec<u8>>)>;
 
@@ -241,12 +393,7 @@ pub fn set_muted(muted: bool) {
 
 /// Whether `device`'s sound is coming in.
 pub fn has_sound(device: &DeviceId) -> bool {
-    state(|s| s.sound.contains(device))
-}
-
-fn set_sound(device: DeviceId, on: bool) {
-    state(|s| if on { s.sound.insert(device) } else { s.sound.remove(&device) });
-    core_host::host().hub.changed(Changes::MIRROR);
+    state(|s| s.sound.contains_key(device))
 }
 
 /// Whether `device` is set to stay awake while mirroring.
@@ -517,6 +664,7 @@ pub fn recording_started_ms(window: &Window) -> i64 {
 
 /// Starts or stops MP4 recording for `window`.
 pub fn toggle_recording(window: Window) {
+    if cfg!(target_os = "macos") { return; }
     if is_recording(&window) {
         stop_recording(window);
         return;
@@ -658,6 +806,14 @@ pub fn stop_recording(window: Window) {
     });
 }
 
+fn feed_recorder(window: Window, feed: impl FnOnce(&mut MirrorRecorder)) {
+    if let Some(recorder) = RECORDERS.lock().unwrap_or_else(|e| e.into_inner())
+        .as_mut().and_then(|recorders| recorders.get_mut(&window))
+    {
+        feed(recorder);
+    }
+}
+
 static STATE: Mutex<Option<State>> = Mutex::new(None);
 
 fn state<T>(f: impl FnOnce(&mut State) -> T) -> T {
@@ -666,20 +822,7 @@ fn state<T>(f: impl FnOnce(&mut State) -> T) -> T {
 
 fn set_phase(window: Window, phase: Phase) {
     let showing = matches!(phase, Phase::Showing);
-    state(|s| {
-        if showing && s.active_window.is_none() {
-            s.active_window = Some(window);
-        } else if !showing && s.active_window == Some(window) {
-            s.active_window = s
-                .windows
-                .iter()
-                .find(|(w, shown)| **w != window && matches!(shown.phase, Phase::Showing))
-                .map(|(w, _)| *w);
-        }
-        if let Some(shown) = s.windows.get_mut(&window) {
-            shown.phase = phase;
-        }
-    });
+    state(|s| s.set_phase(window, phase));
     if showing {
         ensure_gamepad_loop();
     }
@@ -772,11 +915,15 @@ fn power(s: &State, device: &DeviceId) -> (bool, bool) {
 
 /// Asks the phone for its screen.
 pub fn start(device: DeviceId) {
+    // A showing screen stays: re-asking would orphan the live stream and
+    // waste a consent round trip. Mac-only; Windows keeps re-ask behavior.
+    if VIEW_ONLY && phase(&Window::screen(device)) == Some(Phase::Showing) {
+        return;
+    }
     if keyboard_device() == Some(device) {
         set_remote_keyboard(None);
     }
     let window = Window::screen(device);
-    ffi::video_clear(&window.key());
     let (stay_awake, screen_off) = state(|s| {
         // The phone's screen starts on, unless app windows already turned it off.
         if !s.mirroring(&device) {
@@ -795,6 +942,12 @@ pub fn keyboard_device() -> Option<DeviceId> {
 
 /// Starts or stops remote keyboard typing on `device` without screen mirroring.
 pub fn set_remote_keyboard(device: Option<DeviceId>) {
+    if let Some(device) = device
+        && control_reason(Window::screen(device)) != "available"
+    {
+        request_control(&Window::screen(device).key());
+        return;
+    }
     let prev = state(|s| {
         let prev = s.keyboard_device;
         s.keyboard_device = device;
@@ -860,6 +1013,9 @@ pub fn keyboard_paste(device: DeviceId) {
 /// Opens one of the phone's apps in a window of its own (or does nothing
 /// when it's already open; reuses an ended window for that app).
 pub fn start_app(device: DeviceId, pkg: String, label: String) {
+    if !APP_WINDOWS {
+        return;
+    }
     let window = state(|s| {
         if s.windows.iter().any(|(w, shown)| {
             w.device == device
@@ -883,7 +1039,6 @@ pub fn start_app(device: DeviceId, pkg: String, label: String) {
         Some((window, power(s, &device)))
     });
     let Some((window, (stay_awake, screen_off))) = window else { return };
-    ffi::video_clear(&window.key());
     request(
         window,
         MirrorStart {
@@ -903,6 +1058,9 @@ pub fn reopen(window: Window) {
         start(window.device);
         return;
     }
+    if !APP_WINDOWS {
+        return;
+    }
     let pkg = state(|s| {
         if !s.mirroring(&window.device) {
             s.screen_off.remove(&window.device);
@@ -914,7 +1072,6 @@ pub fn reopen(window: Window) {
         Some((pkg, power(s, &window.device)))
     });
     let Some((pkg, (stay_awake, screen_off))) = pkg else { return };
-    ffi::video_clear(&window.key());
     request(
         window,
         MirrorStart {
@@ -942,20 +1099,85 @@ pub fn resize(window: Window, width: u32, height: u32) {
     }
     let w = (w & !1).clamp(240, 4096);
     let h = (h & !1).clamp(240, 4096);
-    let Some(node) = core_host::node() else { return };
+    let legacy = state(|s| s.request_nodes.get(&window)
+        .filter(|owner| owner.app_view.is_none()).map(|owner| owner.node.clone()));
+    if !cfg!(target_os = "macos") && let Some(node) = legacy {
+        core_host::spawn(async move { let _ = node.mirror_resize(window.device, window.session, w, h).await; });
+        return;
+    }
+    let captured = state(|s| {
+        if !s.windows.get(&window).is_some_and(|shown| shown.phase == Phase::Showing) {
+            return None;
+        }
+        Some((
+            s.request_nodes.get(&window)?.app_view.clone()?,
+            *s.requests.get(&window)?,
+            *s.streams.get(&window)?,
+        ))
+    });
+    let Some((target, local_request, stream)) = captured else { return };
     core_host::spawn(async move {
-        if let Err(e) = node.mirror_resize(window.device, window.session, w, h).await {
+        let result = target
+            .send_if_current(w, h, move || {
+                state(|s| {
+                    s.owns_request(&window, local_request)
+                        && s.shows(&window, stream)
+                        && s.windows.get(&window).is_some_and(|shown| shown.phase == Phase::Showing)
+                })
+            })
+            .await;
+        if let Err(e) = result {
             tracing::debug!(error = %e, "resize didn't reach the phone");
         }
     });
 }
 
 fn request(window: Window, options: MirrorStart) {
+    let node = core_host::node();
+    let request = NEXT_REQUEST.fetch_add(1, Ordering::Relaxed);
+    state(|s| {
+        s.requests.insert(window, request);
+        s.request_nodes.remove(&window);
+        s.control_requests.remove(&window);
+        if let Some(node) = &node {
+            s.request_nodes.insert(window, RequestNode { node: node.clone(), app_view: None });
+        }
+        s.streams.remove(&window);
+        clear_window_buffers(&window);
+        ffi::video_clear(&window.key());
+    });
     core_host::host().hub.changed(Changes::MIRROR);
-    let Some(node) = core_host::node() else { return };
+    let Some(node) = node else { return };
     let app = options.app.is_some();
     core_host::spawn(async move {
-        if let Err(e) = node.mirror_start(window.device, options).await {
+        let started = {
+            let _turn = TURN.lock().await;
+            if !state(|s| s.owns_request(&window, request)) {
+                return;
+            }
+            if let Some(owner) = state(|s| s.pending_stops.remove(&window)) {
+                owner.stop(window).await;
+            }
+            if !state(|s| s.owns_request(&window, request)) {
+                return;
+            }
+            if app && (cfg!(target_os = "macos") || node.mirror_app_windows_owned(window.device)) {
+                node.mirror_start_owned(window.device, options, move |view| {
+                    state(|s| {
+                        if !s.owns_request(&window, request) {
+                            return false;
+                        }
+                        let Some(owner) = s.request_nodes.get_mut(&window) else { return false };
+                        owner.app_view = Some(view);
+                        true
+                    })
+                })
+                .await
+            } else {
+                node.mirror_start(window.device, options).await
+            }
+        };
+        if let Err(e) = started {
             let reason = match e {
                 Error::Denied => tr!("Mirror", "Mirroring is turned off for this phone."),
                 Error::Unsupported if app => tr!(
@@ -971,24 +1193,43 @@ fn request(window: Window, options: MirrorStart) {
                 Error::Offline | Error::NotPaired => tr!("Mirror", "The phone isn't connected."),
                 e => describe(&e),
             };
-            set_phase(window, Phase::Ended(Some(reason)));
+            let current = state(|s| {
+                if !s.owns_request(&window, request) {
+                    return false;
+                }
+                s.set_phase(window, Phase::Ended(Some(reason)));
+                true
+            });
+            if current {
+                core_host::host().hub.changed(Changes::MIRROR);
+            }
             return;
         }
         // An app window has no prompt to wait for on the phone: its first frame comes within
         // seconds, or the phone couldn't start it (its stream then ends with no picture).
         if app {
             tokio::time::sleep(APP_START_TIMEOUT).await;
-            let stuck = state(|s| s.windows.get(&window).is_some_and(|w| w.phase == Phase::Asking));
-            if stuck {
-                tracing::warn!(session = window.session, "an app window never started on the phone");
-                node.mirror_stop(window.device, window.session).await;
-                set_phase(
+            let _turn = TURN.lock().await;
+            let stuck = state(|s| {
+                if !s.owns_request(&window, request)
+                    || !s.windows.get(&window).is_some_and(|w| w.phase == Phase::Asking)
+                {
+                    return None;
+                }
+                let owner = s.request_nodes.get(&window)?.clone();
+                s.set_phase(
                     window,
                     Phase::Ended(Some(tr!(
                         "Mirror",
                         "The app didn't open on the phone. Try again, or open NectarLink on the phone to check Wireless debugging."
                     ))),
                 );
+                Some(owner)
+            });
+            if let Some(owner) = stuck {
+                tracing::warn!(session = window.session, "an app window never started on the phone");
+                core_host::host().hub.changed(Changes::MIRROR);
+                owner.stop(window).await;
             }
         }
     });
@@ -996,42 +1237,99 @@ fn request(window: Window, options: MirrorStart) {
 
 /// How long an app window may take to show its first frame.
 const APP_START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// How long the phone's screen may take to show its first frame once its
+/// stream is open.
+const SCREEN_FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Holds the screen's newly opened stream to a first frame: when none
+/// arrives in time, the request still showing ends with a reason and its
+/// stream stops, leaving Try again.
+fn expect_first_frame(window: Window) {
+    let deadline = NEXT_DEADLINE.fetch_add(1, Ordering::Relaxed);
+    let armed = state(|s| {
+        let request = *s.requests.get(&window)?;
+        let node = s.request_nodes.get(&window)?.node.clone();
+        s.first_frames.insert(window, deadline);
+        Some((request, node))
+    });
+    let Some((request, node)) = armed else { return };
+    core_host::spawn(async move {
+        tokio::time::sleep(SCREEN_FIRST_FRAME_TIMEOUT).await;
+        let _turn = TURN.lock().await;
+        if !state(|s| s.end_without_first_frame(window, request, deadline)) {
+            return;
+        }
+        tracing::warn!("the phone's screen never sent a picture");
+        core_host::host().hub.changed(Changes::MIRROR);
+        node.mirror_stop(window.device, window.session).await;
+    });
+}
 
 /// Stops a mirroring (its window closed).
 pub fn stop(window: Window) {
     stop_recording(window);
-    clear_window_buffers(&window);
     state(|s| {
+        if let Some(owner) = s.request_nodes.remove(&window) {
+            s.pending_stops.insert(window, owner);
+        }
         s.windows.remove(&window);
         s.notices.remove(&window);
+        s.requests.remove(&window);
+        s.control_requests.remove(&window);
+        s.first_frames.remove(&window);
+        s.streams.remove(&window);
+        clear_window_buffers(&window);
+        ffi::video_clear(&window.key());
         if !s.mirroring(&window.device) {
             s.screen_off.remove(&window.device);
         }
     });
-    ffi::video_clear(&window.key());
     core_host::host().hub.changed(Changes::MIRROR);
-    let Some(node) = core_host::node() else { return };
-    core_host::spawn(async move { node.mirror_stop(window.device, window.session).await });
+    core_host::spawn(async move {
+        let _turn = TURN.lock().await;
+        // A replacement request may already have flushed this exact close.
+        if let Some(owner) = state(|s| s.pending_stops.remove(&window)) {
+            owner.stop(window).await;
+        }
+    });
 }
 
 pub fn on_event(event: &NodeEvent) {
     match event {
         NodeEvent::Mirroring { device, session, on: true } => {
+            if *session != MIRROR_SCREEN {
+                return;
+            }
             let window = Window { device: *device, session: *session };
             set_phase(window, Phase::Showing);
-            if *session != MIRROR_SCREEN {
-                let saved = state(|s| {
-                    let pkg = s.windows.get(&window).and_then(|w| w.pkg.as_deref())?;
-                    s.saved.geometry.get(&format!("{device}/{pkg}")).copied()
-                });
-                if let Some(geom) = saved {
-                    resize(window, geom.width, geom.height);
-                }
-            }
+            expect_first_frame(window);
         }
         // Closed here: nothing to say. Stopped on the phone: say so.
         NodeEvent::Mirroring { device, session, on: false } => {
             let window = Window { device: *device, session: *session };
+            if *session != MIRROR_SCREEN {
+                // Source decline/retirement may have no sink yet. A queued old
+                // peer/session event cannot retire a replacement live target.
+                let ended = state(|s| {
+                    let Some(view) = s.request_nodes.get(&window).and_then(|owner| owner.app_view.as_ref())
+                    else {
+                        return false;
+                    };
+                    if view.is_current() {
+                        return false;
+                    }
+                    stop_recording(window);
+                    s.streams.remove(&window);
+                    clear_window_buffers(&window);
+                    ffi::video_clear(&window.key());
+                    s.set_phase(window, Phase::Ended(None));
+                    true
+                });
+                if ended {
+                    core_host::host().hub.changed(Changes::MIRROR);
+                }
+                return;
+            }
             stop_recording(window);
             clear_window_buffers(&window);
             if *session == MIRROR_SCREEN {
@@ -1047,7 +1345,8 @@ pub fn on_event(event: &NodeEvent) {
                     core_host::host().hub.changed(Changes::MIRROR);
                 }
             }
-            if phase(&window).is_some() {
+            // An ending this PC caused keeps its reason.
+            if matches!(phase(&window), Some(Phase::Asking | Phase::Showing)) {
                 set_phase(window, Phase::Ended(None));
             }
             state(|s| {
@@ -1076,6 +1375,11 @@ pub fn on_event(event: &NodeEvent) {
             let cleared_kb = state(|s| {
                 s.apps.remove(id);
                 s.screen_off.remove(id);
+                s.requests.retain(|w, _| w.device != *id);
+                s.request_nodes.retain(|w, _| w.device != *id);
+                s.control_requests.retain(|w, _| w.device != *id);
+                s.pending_stops.retain(|w, _| w.device != *id);
+                s.streams.retain(|w, _| w.device != *id);
                 if s.keyboard_device == Some(*id) {
                     s.keyboard_device = None;
                     true
@@ -1256,27 +1560,92 @@ pub fn palette_apps(device: DeviceId) -> Vec<(String, String)> {
     out
 }
 
-/// The PC's mouse, keyboard, and gamepad on a mirrored screen or app window,
-/// sent in order.
+/// Actual admission for the exact showing phone screen. App-window control
+/// remains separately fenced; no Mac host injection/capture is enabled here.
+pub fn control_reason(window: Window) -> &'static str {
+    if window.session != MIRROR_SCREEN && !APP_WINDOWS {
+        return "unsupported";
+    }
+    let target = state(|s| {
+        if !s.windows.get(&window).is_some_and(|shown| shown.phase == Phase::Showing)
+            || !s.streams.contains_key(&window)
+            || latest_bitmap(&window).is_none()
+        {
+            return None;
+        }
+        Some((s.request_nodes.get(&window)?.node.clone(), *s.control_requests.get(&window)?))
+    });
+    let Some((node, wire_request)) = target else {
+        return "notShowing";
+    };
+    node.mirror_control_reason_for_session(window.device, window.session, wire_request)
+}
+
+#[path = "mirror_scroll.rs"]
+mod mirror_scroll;
+
+/// Ordered queue reuses the existing MirrorInput handlers. Every phone event
+/// captures its original Node/connection/request/epoch before entering the queue.
 pub fn input(window: Window, input: nectarlink_core::MirrorInput) {
-    static QUEUE: std::sync::OnceLock<
-        tokio::sync::mpsc::UnboundedSender<(Window, nectarlink_core::MirrorInput)>,
-    > = std::sync::OnceLock::new();
+    if !cfg!(target_os = "macos") && control_reason(window) == "unsupported" {
+        if let Some(node) = core_host::node() {
+            core_host::spawn(async move { let _ = node.mirror_input(window.device, window.session, input).await; });
+        }
+        return;
+    }
+    if window.session != MIRROR_SCREEN && !APP_WINDOWS {
+        return;
+    }
+    let captured = state(|s| {
+        if !s.windows.get(&window).is_some_and(|shown| shown.phase == Phase::Showing)
+            || latest_bitmap(&window).is_none()
+        {
+            return None;
+        }
+        Some((
+            s.request_nodes.get(&window)?.node.clone(),
+            *s.requests.get(&window)?,
+            *s.streams.get(&window)?,
+            *s.control_requests.get(&window)?,
+        ))
+    });
+    let Some((node, local_request, stream, wire_request)) = captured else { return };
+    let Ok(control) = node.mirror_control_for_session(window.device, window.session, wire_request) else {
+        return;
+    };
+    static QUEUE: OnceLock<mirror_scroll::Inputs<nectarlink_core::MirrorControl>> = OnceLock::new();
+    let mut started = false;
     let queue = QUEUE.get_or_init(|| {
-        let (queue, mut inputs) =
-            tokio::sync::mpsc::unbounded_channel::<(Window, nectarlink_core::MirrorInput)>();
+        started = true;
+        mirror_scroll::Inputs::new()
+    });
+    if started {
         core_host::spawn(async move {
-            while let Some((window, input)) = inputs.recv().await {
-                if let Some(node) = core_host::node()
-                    && let Err(e) = node.mirror_input(window.device, window.session, input).await
-                {
-                    tracing::debug!(error = %e, "input didn't reach the phone");
+            loop {
+                let mirror_scroll::Queued { window, control, request, stream, input } = queue.next().await;
+                if !control.is_current() {
+                    continue;
+                }
+                let result = control
+                    .send_if_current(input, move || {
+                        state(|s| {
+                            s.owns_request(&window, request)
+                                && s.shows(&window, stream)
+                                && latest_bitmap(&window).is_some()
+                                && s.windows.get(&window).is_some_and(|shown| shown.phase == Phase::Showing)
+                        })
+                    })
+                    .await;
+                if let Err(error) = result {
+                    tracing::debug!(%error, "input didn't reach the phone");
                 }
             }
         });
-        queue
-    });
-    let _ = queue.send((window, input));
+    }
+    let queued = mirror_scroll::Queued { window, control, request, stream, input };
+    if !queue.push(queued, nectarlink_core::MirrorControl::is_current) {
+        tracing::debug!("no room for this input; the phone is behind");
+    }
 }
 
 /// Resolves the currently active or showing mirror window.
@@ -1354,14 +1723,26 @@ pub fn drop_files(raw_urls: &[String]) {
     crate::transfers::send(window.device, paths);
 }
 
-/// Requests remote input control from the phone for `key` and shows a guidance banner.
+/// Guidance only: a desktop cannot grant phone-owner consent or rearm Stop.
+/// Never synthesize a touch to ask for permission.
 pub fn request_control(key: &str) {
     let Some(window) = Window::parse(key) else { return };
-    set_notice(window, "On your phone, tap Allow / turn on Control from your PC in NectarLink");
-    input(
-        window,
-        nectarlink_core::MirrorInput::Touch { action: nectarlink_core::TouchAction::Up, x: 0.5, y: 0.5 },
-    );
+    let notice = match control_reason(window) {
+        "available" => return,
+        "ownerApproval" => {
+            tr!("Mirror", "On the phone, allow this computer to control the phone in Settings.")
+        }
+        "stopped" => tr!(
+            "Mirror",
+            "Phone control was stopped on the phone. To allow this computer again, turn Screen sharing and typing off and then on for this computer in NectarLink's settings on the phone."
+        ),
+        "inputUnavailable" => {
+            tr!("Mirror", "On the phone, enable Control from your PC or start Elevated mode.")
+        }
+        "unsupported" => tr!("Mirror", "Phone control is unavailable for this connection."),
+        _ => tr!("Mirror", "Connect the phone and start screen mirroring to control it."),
+    };
+    set_notice(window, notice);
 }
 
 /// Notifies PC-to-phone cursor/keyboard Flow when the mouse enters `key`.
@@ -1370,7 +1751,9 @@ pub fn enter_window(key: &str) {
         state(|s| {
             s.active_window = Some(win);
         });
-        crate::input_share::enter_remote(win.device);
+        if !VIEW_ONLY {
+            crate::input_share::enter_remote(win.device);
+        }
     }
 }
 
@@ -1425,7 +1808,7 @@ pub fn sync_clipboard_on_focus(window: Window) {
     state(|s| {
         s.active_window = Some(window);
     });
-    if crate::settings::flow_follow_clipboard() {
+    if !VIEW_ONLY && crate::settings::flow_follow_clipboard() {
         sync_clipboard_for_device(window.device);
     }
 }
@@ -1767,8 +2150,18 @@ fn ensure_gamepad_loop() {
 /// stream of its own): only for mirrorings this PC asked for.
 pub fn sink(device: &DeviceId, session: u32) -> Option<Arc<dyn MirrorSink>> {
     let window = Window { device: *device, session };
-    matches!(phase(&window), Some(Phase::Asking | Phase::Showing))
-        .then(|| Arc::new(Sink::new(window)) as Arc<dyn MirrorSink>)
+    let wanted = APP_WINDOWS || session == MIRROR_SCREEN;
+    state(|s| {
+        let request = *s.requests.get(&window)?;
+        let live = s.windows.get(&window).is_some_and(|w| matches!(w.phase, Phase::Asking | Phase::Showing));
+        if !(wanted && live) {
+            return None;
+        }
+        // Each sink gets a generation, so a later sound stream can tell that
+        // it owns a device's sound over an earlier one.
+        s.sound_generation = s.sound_generation.saturating_add(1);
+        Some(Arc::new(Sink::new(window, request, s.sound_generation)) as Arc<dyn MirrorSink>)
+    })
 }
 
 enum Item {
@@ -1781,35 +2174,49 @@ enum Item {
 /// player; each starts with its stream's first packet (the format).
 struct Sink {
     window: Window,
+    request: u64,
+    /// This sink's sound generation: it owns its device's sound flag while it
+    /// plays, and only it may clear it.
+    generation: u64,
     video: OnceLock<Video>,
     sound: Mutex<Option<Player>>,
 }
 
 /// The decoder thread's end of a sink.
 struct Video {
+    stream: u64,
     queue: SyncSender<Item>,
     /// Packets waiting for the decoder.
     waiting: Arc<AtomicUsize>,
+    /// A packet was dropped: the frames after it are left out until a
+    /// keyframe gets in, so none decodes against the missing one.
+    skipping: AtomicBool,
 }
 
 impl Sink {
-    fn new(window: Window) -> Sink {
-        Sink { window, video: OnceLock::new(), sound: Mutex::new(None) }
+    fn new(window: Window, request: u64, generation: u64) -> Sink {
+        Sink { window, request, generation, video: OnceLock::new(), sound: Mutex::new(None) }
     }
 }
 
 impl Video {
-    fn start(window: Window) -> Video {
+    fn start(window: Window, request: u64) -> Video {
         let (queue, items) = sync_channel(BACKLOG);
         let waiting = Arc::new(AtomicUsize::new(0));
         let counter = waiting.clone();
-        let started = std::thread::Builder::new()
-            .name("mirror-decoder".into())
-            .spawn(move || decode(window, &items, &counter));
+        let stream = NEXT_STREAM.fetch_add(1, Ordering::Relaxed);
+        state(|s| {
+            if s.owns_request(&window, request) {
+                s.streams.insert(window, stream);
+            }
+        });
+        let started = std::thread::Builder::new().name("mirror-decoder".into()).spawn(move || {
+            decode(window, stream, &items, &counter);
+        });
         if let Err(e) = started {
             tracing::error!(error = %e, "can't start the video decoder");
         }
-        Video { queue, waiting }
+        Video { stream, queue, waiting, skipping: AtomicBool::new(false) }
     }
 }
 
@@ -1824,52 +2231,114 @@ impl Sink {
 
 impl MirrorSink for Sink {
     fn config(&self, config: MirrorConfig) {
-        LAST_CONFIG
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get_or_insert_with(HashMap::new)
-            .insert(self.window, (config.width, config.height));
-        if let Some(rec) =
-            RECORDERS.lock().unwrap_or_else(|e| e.into_inner()).as_mut().and_then(|m| m.get_mut(&self.window))
-        {
-            rec.on_config(config.width, config.height);
+        if !state(|s| {
+            if !s.owns_request(&self.window, self.request) {
+                return false;
+            }
+            if self.window.session != MIRROR_SCREEN {
+                let Some(view) = s.request_nodes.get(&self.window).and_then(|owner| owner.app_view.as_ref())
+                else {
+                    return false;
+                };
+                if config.request != Some(view.request())
+                    || !view.is_current()
+                    || self.video.get().is_some_and(|video| !s.shows(&self.window, video.stream))
+                {
+                    return false;
+                }
+            }
+            true
+        }) {
+            return;
         }
-        let video = self.video.get_or_init(|| Video::start(self.window));
-        // The format matters: wait for room rather than drop it.
+        let video = self.video.get_or_init(|| Video::start(self.window, self.request));
+        let accepted = state(|s| {
+            if !s.owns_request(&self.window, self.request) || !s.shows(&self.window, video.stream) {
+                return None;
+            }
+            if self.window.session != MIRROR_SCREEN {
+                let owner = s.request_nodes.get(&self.window)?;
+                if let Some(view) = owner.app_view.as_ref() {
+                    if config.request != Some(view.request()) || !view.is_current() { return None; }
+                } else if cfg!(target_os = "macos") {
+                    return None;
+                }
+                s.set_phase(self.window, Phase::Showing);
+            }
+            if let Some(request) = config.request {
+                s.control_requests.insert(self.window, request);
+            } else {
+                s.control_requests.remove(&self.window);
+            }
+            LAST_CONFIG
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_or_insert_with(HashMap::new)
+                .insert(self.window, (config.width, config.height));
+            Some(feed_recorder(self.window, |rec| rec.on_config(config.width, config.height)))
+        });
+        let Some(()) = accepted else { return };
+        // The decoder repeats its exact stream check after this queue wait.
         let _ = video.queue.send(Item::Config(config));
+        core_host::host().hub.changed(Changes::MIRROR);
     }
 
     fn packet(&self, keyframe: bool, time_us: u64, data: Vec<u8>) {
-        if keyframe {
-            let mut sps_map = LAST_SPS_PPS.lock().unwrap_or_else(|e| e.into_inner());
-            let entry = sps_map.get_or_insert_with(HashMap::new).entry(self.window).or_default();
-            merge_sps_pps(entry, &data);
-        }
-        if ACTIVE_RECORDERS.load(Ordering::Relaxed) > 0
-            && let Some(rec) = RECORDERS
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_mut()
-                .and_then(|m| m.get_mut(&self.window))
-            && let Err(e) = rec.on_packet(keyframe, time_us, &data)
-        {
-            tracing::warn!(error = %e, "mirror recording packet failed");
-        }
         let Some(video) = self.video.get() else { return };
+        let accepted = state(|s| {
+            if !s.owns_request(&self.window, self.request) || !s.shows(&self.window, video.stream) {
+                return None;
+            }
+            if keyframe {
+                let mut sps_map = LAST_SPS_PPS.lock().unwrap_or_else(|e| e.into_inner());
+                let entry = sps_map.get_or_insert_with(HashMap::new).entry(self.window).or_default();
+                merge_sps_pps(entry, &data);
+            }
+            if ACTIVE_RECORDERS.load(Ordering::Relaxed) > 0 {
+                feed_recorder(self.window, |rec| {
+                    if let Err(e) = rec.on_packet(keyframe, time_us, &data) {
+                        tracing::warn!(error = %e, "mirror recording packet failed");
+                    }
+                })
+            }
+            Some(())
+        });
+        let Some(()) = accepted else { return };
+        if !keyframe && video.skipping.load(Ordering::Acquire) {
+            return;
+        }
         match video.queue.try_send(Item::Packet { keyframe, time_us, data }) {
             Ok(()) => {
+                video.skipping.store(false, Ordering::Release);
                 video.waiting.fetch_add(1, Ordering::AcqRel);
             }
             Err(TrySendError::Disconnected(_)) => {}
             // The decoder is behind; it starts over at the next keyframe.
-            Err(TrySendError::Full(_)) => self.keyframe_please(),
+            Err(TrySendError::Full(_)) => {
+                video.skipping.store(true, Ordering::Release);
+                self.keyframe_please();
+            }
         }
     }
 
     fn ended(&self) {
-        stop_recording(self.window);
-        if let Some(video) = self.video.get() {
-            let _ = video.queue.send(Item::Ended);
+        let Some(video) = self.video.get() else { return };
+        let current = state(|s| {
+            if !s.owns_request(&self.window, self.request) || !s.shows(&self.window, video.stream) {
+                return false;
+            }
+            stop_recording(self.window);
+            if self.window.session != MIRROR_SCREEN {
+                s.streams.remove(&self.window);
+                clear_window_buffers(&self.window);
+                ffi::video_clear(&self.window.key());
+                s.set_phase(self.window, Phase::Ended(None));
+            }
+            true
+        });
+        let _ = video.queue.send(Item::Ended);
+        if current {
+            core_host::host().hub.changed(Changes::MIRROR);
         }
     }
 
@@ -1889,16 +2358,26 @@ impl MirrorSink for Sink {
         {
             rec.on_audio_config(config.rate, config.channels);
         }
-        let mut sound = self.sound.lock().unwrap_or_else(|e| e.into_inner());
-        // A new format: a new player (the old one ends when dropped).
-        *sound = match Player::start(config.rate, u16::from(config.channels)) {
-            Ok(player) => Some(player),
-            Err(e) => {
-                tracing::warn!(error = %e, "can't play the phone's sound");
-                None
-            }
+        let (old_player, playing) = {
+            let mut sound = self.sound.lock().unwrap_or_else(|e| e.into_inner());
+            // A new format: a new player (the old one ends when dropped).
+            let new_player = match Player::start(config.rate, u16::from(config.channels)) {
+                Ok(player) => Some(player),
+                Err(e) => {
+                    tracing::warn!(error = %e, "can't play the phone's sound");
+                    None
+                }
+            };
+            let old_player = std::mem::replace(&mut *sound, new_player);
+            let playing = sound.is_some();
+            drop(sound);
+            (old_player, playing)
         };
-        set_sound(self.window.device, sound.is_some());
+        drop(old_player);
+        // This sink owns the device's sound from now on: a stream that
+        // replaces it later takes the flag over.
+        state(|s| s.claim_sound(self.window.device, self.generation, playing));
+        core_host::host().hub.changed(Changes::MIRROR);
     }
 
     fn audio(&self, time_us: u64, data: Vec<u8>) {
@@ -1922,14 +2401,45 @@ impl MirrorSink for Sink {
     }
 
     fn audio_ended(&self) {
-        self.sound.lock().unwrap_or_else(|e| e.into_inner()).take();
-        set_sound(self.window.device, false);
+        let old_player = {
+            let mut sound = self.sound.lock().unwrap_or_else(|e| e.into_inner());
+            let old_player = sound.take();
+            drop(sound);
+            old_player
+        };
+        drop(old_player);
+        // Only the sink that owns the device's sound may clear the flag: a
+        // stream that was replaced must not hide the sound that replaced it.
+        state(|s| s.release_sound(self.window.device, self.generation));
+        core_host::host().hub.changed(Changes::MIRROR);
     }
 }
 
+/// Ends a mirroring this PC can't show, and stops the phone sending it;
+/// nothing once `window` has closed or asked again (`id` is then old).
+fn give_up(window: Window, id: u64, reason: String) {
+    let owner = state(|s| {
+        if !s.shows(&window, id) {
+            return None;
+        }
+        let owner = s.request_nodes.get(&window)?.clone();
+        s.set_phase(window, Phase::Ended(Some(reason)));
+        Some(owner)
+    });
+    let Some(owner) = owner else { return };
+    core_host::host().hub.changed(Changes::MIRROR);
+    core_host::spawn(async move {
+        let _turn = TURN.lock().await;
+        if state(|s| s.shows(&window, id)) {
+            owner.stop(window).await;
+        }
+    });
+}
+
+
 /// The decoder thread: decodes everything (later pictures depend on
 /// earlier ones), shows the newest picture of each batch.
-fn decode(window: Window, items: &Receiver<Item>, waiting: &AtomicUsize) {
+fn decode(window: Window, id: u64, items: &Receiver<Item>, waiting: &AtomicUsize) {
     let stream = window.key();
     // On the GPU when the PC has one (falling back to software on its own),
     // so big phone screens and several app windows stay smooth.
@@ -1937,7 +2447,7 @@ fn decode(window: Window, items: &Receiver<Item>, waiting: &AtomicUsize) {
         Ok(decoder) => decoder,
         Err(e) => {
             tracing::error!(error = %e, "no H.264 decoder");
-            set_phase(window, Phase::Ended(Some(tr!("Mirror", "This PC can't decode the phone's video."))));
+            give_up(window, id, tr!("Mirror", "This PC can't decode the phone's video."));
             return;
         }
     };
@@ -1950,8 +2460,12 @@ fn decode(window: Window, items: &Receiver<Item>, waiting: &AtomicUsize) {
     let mut size = (0, 0);
     // After a gap, pictures are garbage until the next keyframe.
     let mut need_keyframe = true;
+    let mut failures = 0;
     let mut stats = Stats::new();
     while let Ok(item) = items.recv() {
+        if !state(|s| s.shows(&window, id)) {
+            break;
+        }
         match item {
             Item::Config(config) => {
                 if decoder.codec() != config.codec {
@@ -1966,12 +2480,10 @@ fn decode(window: Window, items: &Receiver<Item>, waiting: &AtomicUsize) {
                         }
                         Err(e) => {
                             tracing::error!(error = %e, codec = %config.codec, "no decoder for codec");
-                            set_phase(
+                            give_up(
                                 window,
-                                Phase::Ended(Some(format!(
-                                    "This PC can't decode {} video.",
-                                    config.codec.to_uppercase()
-                                ))),
+                                id,
+                                format!("This PC can't decode {} video.", config.codec.to_uppercase()),
                             );
                             return;
                         }
@@ -1990,8 +2502,17 @@ fn decode(window: Window, items: &Receiver<Item>, waiting: &AtomicUsize) {
                 need_keyframe = false;
                 let started = Instant::now();
                 let pictures = match decoder.decode(&data, time_us) {
-                    Ok(pictures) => pictures,
+                    Ok(pictures) => {
+                        failures = 0;
+                        pictures
+                    }
                     Err(e) => {
+                        failures += 1;
+                        if failures >= DECODE_FAILURES {
+                            tracing::warn!(error = %e, failures, "the phone's video keeps failing to decode");
+                            give_up(window, id, tr!("Mirror", "This PC can't decode the phone's video."));
+                            break;
+                        }
                         tracing::debug!(error = %e, "a video packet didn't decode");
                         decoder.flush();
                         need_keyframe = true;
@@ -2006,13 +2527,25 @@ fn decode(window: Window, items: &Receiver<Item>, waiting: &AtomicUsize) {
                     let (w, h) = if size.0 > 0 { size } else { (picture.width, picture.height) };
                     let (src_w, src_h) = (w.min(picture.width), h.min(picture.height));
                     let bgrx = to_bgrx(picture, w, h);
-                    if (src_w, src_h) == (w, h) || src_w == 0 || src_h == 0 {
-                        ffi::video_frame(&stream, src_w, src_h, &bgrx);
-                        save_latest_frame(window, src_w, src_h, bgrx);
+                    let (width, height, pixels) = if (src_w, src_h) == (w, h) || src_w == 0 || src_h == 0 {
+                        (src_w, src_h, bgrx)
                     } else {
-                        let scaled = scale_bgrx(&bgrx, src_w, src_h, w, h);
-                        ffi::video_frame(&stream, w, h, &scaled);
-                        save_latest_frame(window, w, h, scaled);
+                        (w, h, scale_bgrx(&bgrx, src_w, src_h, w, h))
+                    };
+                    // Keep ownership through publication: close/reopen cannot
+                    // clear the window and then receive this older frame.
+                    let became_ready = state(|s| {
+                        if s.shows(&window, id) {
+                            let first = latest_bitmap(&window).is_none();
+                            ffi::video_frame(&stream, width, height, &pixels);
+                            save_latest_frame(window, width, height, pixels);
+                            first
+                        } else {
+                            false
+                        }
+                    });
+                    if became_ready {
+                        core_host::host().hub.changed(Changes::MIRROR);
                     }
                     stats.shown(decoded, converted.elapsed());
                 } else {
@@ -2022,8 +2555,12 @@ fn decode(window: Window, items: &Receiver<Item>, waiting: &AtomicUsize) {
             Item::Ended => break,
         }
     }
-    clear_window_buffers(&window);
-    ffi::video_clear(&stream);
+    state(|s| {
+        if s.shows(&window, id) {
+            clear_window_buffers(&window);
+            ffi::video_clear(&stream);
+        }
+    });
 }
 
 fn scale_bgrx(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
@@ -2082,6 +2619,17 @@ impl Stats {
     }
 }
 
+/// The view-only receiver in its real window, as a runnable gate for the
+/// non-default `test-support` build:
+/// `nectarlink-desktop --mirror-window-gate --data-dir <run>`.
+///
+/// The production `Mirror` bridge, `MirrorWindow.qml` and `VideoView` show a
+/// second, synthetic phone node paired by QR over 127.0.0.1. That phone only
+/// answers `mirror.start` and sends the committed 128x128 red keyframe, which
+/// the receiver scales to each announced format; nothing is captured, and
+/// there is no microphone, sound, input, app window or saved identity. The
+/// last window records that keyframe at its own size into the run's
+/// `received` folder, never the user's Downloads.
 #[cfg(test)]
 mod tests {
     use super::{

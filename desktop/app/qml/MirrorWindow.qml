@@ -19,6 +19,57 @@ Window {
     readonly property string deviceName: info.name || ""
     readonly property string phase: info.phase || ""
     readonly property bool canControl: info.canControl === true
+    readonly property bool viewOnly: info.viewOnly === true
+    // Negotiated control state from the backend (request-bound phone-control
+    // contract): available, ownerApproval, stopped, inputUnavailable,
+    // unsupported, offline, notShowing, mirroringOff. Missing on old peers
+    // or fixtures. The UI only reads it; grants and Stop live on the phone.
+    readonly property string controlReason: info.controlReason || ""
+    // Screen-reader description of the phone surface: the control state
+    // plus the local focus keys. It only reads existing backend data
+    // (phase/canControl/viewOnly/controlReason); the UI never grants
+    // control itself. Reasons name this connection only, never the OS.
+    readonly property string accessibleControlDescription: {
+        if (win.phase !== "showing")
+            return ""
+        if (win.canControl) {
+            return qsTr("Phone control is on. Type or use arrow keys to control the phone. Press F6 to reach the toolbar. Escape in the toolbar returns here.")
+        }
+        if (win.controlReason === "ownerApproval") {
+            return qsTr("Phone control needs approval. Turn on Allow phone control for this computer in NectarLink's settings on the phone.")
+        }
+        if (win.controlReason === "stopped") {
+            return qsTr("Phone control was stopped on the phone. To allow this computer again, turn Screen sharing and typing off and then on for this computer in NectarLink's settings on the phone.")
+        }
+        if (win.controlReason === "inputUnavailable") {
+            return qsTr("To control the phone, turn on Control from your PC in NectarLink's settings on the phone.")
+        }
+        if (win.controlReason === "unsupported" || win.viewOnly) {
+            return qsTr("Viewing only for this connection. Remote control isn't supported on this phone connection.")
+        }
+        return qsTr("Phone control isn't available for this connection right now.")
+    }
+    readonly property bool onMac: Qt.platform.os === "osx" || Qt.platform.os === "macos"
+    readonly property bool fullScreen: visibility === Window.FullScreen
+    property int visibilityBeforeFullScreen: Window.Windowed
+
+    function toggleFullScreen() {
+        if (fullScreen) {
+            visibility = visibilityBeforeFullScreen
+        } else {
+            visibilityBeforeFullScreen = visibility === Window.Maximized ? Window.Maximized : Window.Windowed
+            visibility = Window.FullScreen
+        }
+    }
+
+    // Full screen from anywhere in this window, including toolbar buttons:
+    // StandardKey.FullScreen is Ctrl+Meta+F (Command+Control+F) on macOS
+    // and F11 on Windows/Linux.
+    Shortcut {
+        sequences: [StandardKey.FullScreen]
+        enabled: win.phase === "showing"
+        onActivated: win.toggleFullScreen()
+    }
 
     visible: true
     title: info.app ? qsTr("%1 · %2").arg(info.title).arg(deviceName)
@@ -40,7 +91,8 @@ Window {
         onTriggered: {
             if (!win.info.app || !win.sized)
                 return
-            Mirror.saveGeometry(win.mirrorKey, win.x, win.y, win.width, win.height)
+            if (!win.fullScreen)
+                Mirror.saveGeometry(win.mirrorKey, win.x, win.y, win.width, win.height)
             if (win.phase === "showing")
                 Mirror.resize(win.mirrorKey, win.width, win.height)
         }
@@ -51,7 +103,7 @@ Window {
         interval: 300
         repeat: false
         onTriggered: {
-            if (win.info.app && win.sized)
+            if (win.info.app && win.sized && !win.fullScreen)
                 Mirror.saveGeometry(win.mirrorKey, win.x, win.y, win.width, win.height)
         }
     }
@@ -85,7 +137,7 @@ Window {
         const maxH = availH * 0.85
         const maxW = availW * 0.85
         const scale = Math.min(maxH / frame.height, maxW / frame.width, 1)
-        if (!sized || (!info.app && Math.abs(width / height - frame.width / frame.height) > 0.05)) {
+        if (!sized || (!info.app && !fullScreen && Math.abs(width / height - frame.width / frame.height) > 0.05)) {
             readyForResize = false
             width = Math.round(frame.width * scale)
             height = Math.round(frame.height * scale)
@@ -98,13 +150,14 @@ Window {
     width: 420
     height: 860
     onClosing: {
-        if (info.app && sized)
+        if (info.app && sized && !fullScreen)
             Mirror.saveGeometry(mirrorKey, x, y, width, height)
         Mirror.stop(mirrorKey)
     }
 
     VideoView {
         id: video
+        objectName: "mirrorVideo"
         anchors.fill: parent
         stream: win.mirrorKey
         windowIcon: win.info.icon || ""
@@ -112,6 +165,12 @@ Window {
             ? "Nectarlink.App." + (win.info.device || "").slice(0, 8) + "." + win.info.pkg
             : ""
         focus: true
+        // The phone picture for screen readers: the name follows the
+        // window title (no new string), the description is the control
+        // state, so revoked control is announced without implying it.
+        Accessible.role: Accessible.Grouping
+        Accessible.name: win.phase === "showing" ? win.title : ""
+        Accessible.description: win.accessibleControlDescription
         acceptsText: win.phase === "showing" && win.canControl
         // The emoji panel (Win+.) and input methods give finished text here
         // instead of as key presses.
@@ -212,9 +271,24 @@ Window {
 
         // The keyboard: shortcuts for screenshots and recording work even
         // without remote control; text and navigation keys go to the phone.
+        // On macOS Qt reports Command as ControlModifier and the Control
+        // key as MetaModifier. Full screen is a window-level Shortcut above
+        // so it also fires from toolbar buttons.
         Keys.onPressed: (event) => {
             if (win.phase !== "showing")
                 return
+            // Local focus key, never sent to the phone (F6 has no phone
+            // binding): Tab stays phone-bound while control is on, so it
+            // cannot be the way out of the surface. Wakes the toolbar so
+            // the keyboard focus ring is visible.
+            if (event.key === Qt.Key_F6) {
+                if (toolbar.visible) {
+                    toolbarWakeTimer.restart()
+                    copyShotBtn.forceActiveFocus(Qt.TabFocusReason)
+                    event.accepted = true
+                }
+                return
+            }
             if ((event.modifiers & Qt.ControlModifier) && (event.modifiers & Qt.ShiftModifier) && event.key === Qt.Key_C) {
                 Mirror.screenshotClipboard(win.mirrorKey)
                 event.accepted = true
@@ -276,13 +350,23 @@ Window {
         onTriggered: win.updateRecordingElapsed()
     }
 
+    // Back, Home and Recents are global actions on the phone, not routed to
+    // an app's own display, so they are offered for the whole phone only.
+    readonly property bool canNavigate: win.phase === "showing" && win.canControl
+        && !win.info.app && win.mirrorKey.length > 0
+    function pressNav(name) {
+        if (win.canNavigate)
+            Mirror.press(win.mirrorKey, name)
+    }
+
     function formatDuration(secs) {
         const m = Math.floor(secs / 60)
         const s = secs % 60
         return (m < 10 ? "0" + m : "" + m) + ":" + (s < 10 ? "0" + s : "" + s)
     }
 
-    // Floating mirror toolbar: screenshots, MP4 recording, stay awake, screen off, and audio mute.
+    // Floating mirror toolbar: screenshots, MP4 recording, stay awake, screen off, audio mute,
+    // full screen, and the phone's Back/Home/Recents.
     Timer {
         id: toolbarWakeTimer
         interval: 1800
@@ -297,51 +381,102 @@ Window {
     }
     Rectangle {
         id: toolbar
+        objectName: "mirrorToolbar"
         anchors.top: parent.top
         anchors.right: parent.right
         anchors.margins: 12
-        width: toolbarRow.implicitWidth + 8
-        height: 40
+        width: toolbarFlow.width + 8
+        height: toolbarFlow.height + 6
         radius: 20
         color: Qt.rgba(0, 0, 0, 0.68)
         visible: win.phase === "showing" && video.frameSize.width > 0
+        // Group label for screen readers; the buttons keep their own
+        // labels. Escape/F6 here return focus to the phone surface and
+        // are never sent to the phone (unaccepted keys propagate up from
+        // the focused button to this container, never sideways to video).
+        Accessible.role: Accessible.Grouping
+        Accessible.name: qsTr("Mirror toolbar")
+        Keys.onPressed: (event) => {
+            if (event.key === Qt.Key_Escape || event.key === Qt.Key_F6) {
+                video.forceActiveFocus()
+                event.accepted = true
+            }
+        }
         readonly property bool toolbarHasFocus: copyShotBtn.activeFocus || saveShotBtn.activeFocus
             || recordBtn.activeFocus || stayAwakeBtn.activeFocus || screenOffBtn.activeFocus || soundBtn.activeFocus
+            || fullScreenBtn.activeFocus || navBackBtn.activeFocus || navHomeBtn.activeFocus || navRecentsBtn.activeFocus
         opacity: topZoneHover.hovered || toolbarHover.hovered || toolbarWakeTimer.running
             || win.info.recording === true || win.info.screenOff === true || toolbarHasFocus ? 1 : 0
         Behavior on opacity { enabled: !Theme.reduceMotion; NumberAnimation { duration: Theme.fadeFast } }
 
         HoverHandler { id: toolbarHover }
 
-        Row {
-            id: toolbarRow
+        // Too narrow for one row (down to the 240 px minimum window), the
+        // buttons wrap onto more rows at full size instead of running off
+        // the window's left edge. The width is the widest row, worked out
+        // from the same conditions that show each button rather than from
+        // the Flow's own size or children, so it cannot loop.
+        readonly property real flowWidth: {
+            const b = copyShotBtn.implicitWidth
+            const s = toolbarFlow.spacing
+            const items = [b, b, b]
+            if (win.info.recording === true)
+                items.push(recordingTime.implicitWidth)
+            items.push(b)
+            if (win.info.canScreenOff === true)
+                items.push(b)
+            if (win.info.sound === true)
+                items.push(b)
+            items.push(b)
+            if (!win.info.app)
+                items.push(3 * b + 2 * s)
+            const limit = Math.max(b, win.width - 2 * anchors.margins - 8)
+            let widest = 0
+            let x = 0
+            for (const w of items) {
+                if (x > 0 && x + w > limit) {
+                    widest = Math.max(widest, x - s)
+                    x = 0
+                }
+                x += w + s
+            }
+            return Math.max(widest, x - s)
+        }
+
+        Flow {
+            id: toolbarFlow
             anchors.centerIn: parent
+            width: toolbar.flowWidth
             spacing: 2
 
             IconButton {
                 id: copyShotBtn
+                objectName: "mirrorCopyShot"
                 iconPath: Icons.copy
                 iconColor: "white"
-                label: qsTr("Copy screenshot (Ctrl+Shift+C)")
+                label: qsTr("Copy screenshot (%1)").arg(win.onMac ? "⌘⇧C" : "Ctrl+Shift+C")
                 onClicked: Mirror.screenshotClipboard(win.mirrorKey)
             }
             IconButton {
                 id: saveShotBtn
                 iconPath: Icons.camera
                 iconColor: "white"
-                label: qsTr("Save screenshot (Ctrl+S)")
+                label: qsTr("Save screenshot (%1)").arg(win.onMac ? "⌘S" : "Ctrl+S")
                 onClicked: Mirror.screenshotFile(win.mirrorKey)
             }
             IconButton {
                 id: recordBtn
+                enabled: win.info.canRecord !== false
                 iconPath: win.info.recording === true ? Icons.stopSquare : Icons.record
                 iconColor: win.info.recording === true ? Theme.error : "white"
-                label: win.info.recording === true ? qsTr("Stop recording (Ctrl+R)") : qsTr("Record video (Ctrl+R)")
+                label: (win.info.recording === true ? qsTr("Stop recording (%1)") : qsTr("Record video (%1)"))
+                    .arg(win.onMac ? "⌘R" : "Ctrl+R")
                 onClicked: Mirror.toggleRecording(win.mirrorKey)
             }
             Txt {
+                id: recordingTime
                 visible: win.info.recording === true
-                anchors.verticalCenter: parent.verticalCenter
+                height: copyShotBtn.implicitHeight
                 leftPadding: 2
                 rightPadding: 6
                 role: "code"
@@ -376,6 +511,62 @@ Window {
                 label: Mirror.muted ? qsTr("Play the phone's sound here") : qsTr("Mute the phone's sound here")
                 onClicked: Mirror.toggleSound()
             }
+            IconButton {
+                id: fullScreenBtn
+                iconPath: win.fullScreen
+                    ? "M9 3v6H3M15 3v6h6M9 21v-6H3M15 21v-6h6"
+                    : "M3 9V3h6M21 9V3h-6M3 15v6h6M21 15v6h-6"
+                iconColor: "white"
+                label: (win.fullScreen ? qsTr("Exit full screen (%1)") : qsTr("Full screen (%1)"))
+                    .arg(win.onMac ? "⌃⌘F" : "F11")
+                onClicked: win.toggleFullScreen()
+            }
+            // One Flow item, so Back/Home/Recents wrap together.
+            Row {
+                id: navRow
+                visible: !win.info.app
+                spacing: toolbarFlow.spacing
+                // Without control the buttons are dimmed and say why to
+                // screen readers; a click brings back the banner that says
+                // why, and nothing goes to the phone.
+                TapHandler {
+                    enabled: !win.canControl
+                    onTapped: {
+                        hintClose.closed = false
+                        hintPulse.restart()
+                    }
+                }
+                IconButton {
+                    id: navBackBtn
+                    objectName: "mirrorNavBack"
+                    enabled: win.canNavigate
+                    iconPath: Icons.back
+                    iconColor: "white"
+                    label: qsTr("Back")
+                    Accessible.description: win.canControl ? "" : win.accessibleControlDescription
+                    onClicked: win.pressNav("back")
+                }
+                IconButton {
+                    id: navHomeBtn
+                    objectName: "mirrorNavHome"
+                    enabled: win.canNavigate
+                    iconPath: Icons.home
+                    iconColor: "white"
+                    label: qsTr("Home")
+                    Accessible.description: win.canControl ? "" : win.accessibleControlDescription
+                    onClicked: win.pressNav("home")
+                }
+                IconButton {
+                    id: navRecentsBtn
+                    objectName: "mirrorNavRecents"
+                    enabled: win.canNavigate
+                    iconPath: Icons.history
+                    iconColor: "white"
+                    label: qsTr("Recent apps")
+                    Accessible.description: win.canControl ? "" : win.accessibleControlDescription
+                    onClicked: win.pressNav("recents")
+                }
+            }
         }
     }
 
@@ -408,6 +599,8 @@ Window {
     // Brief confirmation pill for screenshots, recordings, file drops, and power toggles.
     Rectangle {
         id: noticePill
+        Accessible.role: Accessible.StatusBar
+        Accessible.name: noticePill.pillText
         readonly property string pillText: mirrorDropArea.containsDrag
             ? qsTr("Release to send files to %1").arg(win.deviceName.length > 0 ? win.deviceName : qsTr("phone"))
             : (win.info.notice || "")
@@ -436,9 +629,13 @@ Window {
         }
     }
 
-    // How to control it, until the phone allows it.
+    // Why control is unavailable for this connection, and what (if anything)
+    // the phone owner can do about it. Text mirrors
+    // accessibleControlDescription so the banner and screen reader agree.
     Rectangle {
         id: hintBanner
+        Accessible.role: Accessible.StatusBar
+        Accessible.name: hint.text
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
@@ -477,7 +674,7 @@ Window {
             wrapMode: Text.WordWrap
             role: "bodySmall"
             color: "white"
-            text: qsTr("To control the phone, turn on Control from your PC in NectarLink's settings on the phone.")
+            text: win.accessibleControlDescription
         }
         Button {
             id: notifyPhoneBtn
@@ -486,7 +683,8 @@ Window {
             anchors.verticalCenter: parent.verticalCenter
             variant: "tonal"
             size: "sm"
-            text: qsTr("Notify phone")
+            text: qsTr("How to enable")
+            enabled: !win.viewOnly
             onClicked: Mirror.requestControl(win.mirrorKey)
         }
         IconButton {

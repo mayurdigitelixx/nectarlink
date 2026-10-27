@@ -67,6 +67,10 @@ pub enum Unlock {
     Addon(&'static str),
     /// Every current app version offers it, so the device's app is too old.
     UpdateApp,
+    /// Only the phone owner can allow this trusted PC to control the phone.
+    PhoneControlOwner,
+    /// The missing capability has no app-update or user-grant remedy.
+    Unavailable,
 }
 
 /// One condition a feature depends on.
@@ -139,6 +143,10 @@ pub enum UpgradeAction {
     EnablePath(ConnectionPath),
     /// Allow something for this device.
     EnableDeviceToggle(&'static str),
+    /// Guidance to the phone owner, never a remote grant or Stop rearm.
+    AllowPhoneControl,
+    /// Phone owner must use the existing mirroring OFF→ON Stop rearm.
+    RearmPhoneControl,
     /// Update the app on that device.
     UpdateApp(Role),
 }
@@ -163,6 +171,8 @@ impl UpgradeAction {
             UpgradeAction::EnablePath(ConnectionPath::Lan) => ("enablePath", "lan".into()),
             UpgradeAction::EnablePath(ConnectionPath::Usb) => ("enablePath", "usb".into()),
             UpgradeAction::EnableDeviceToggle(toggle) => ("enableToggle", toggle.into()),
+            UpgradeAction::AllowPhoneControl => ("allowPhoneControl", "phone".into()),
+            UpgradeAction::RearmPhoneControl => ("rearmPhoneControl", "phone".into()),
             UpgradeAction::UpdateApp(Role::Phone) => ("updateApp", "phone".into()),
             UpgradeAction::UpdateApp(Role::Desktop) => ("updateApp", "desktop".into()),
         }
@@ -191,7 +201,9 @@ impl Upgrade {
             UpgradeAction::UpdateApp(_) => Effort::Minutes(2),
             UpgradeAction::GrantPermission(_)
             | UpgradeAction::EnablePath(_)
-            | UpgradeAction::EnableDeviceToggle(_) => Effort::Instant,
+            | UpgradeAction::EnableDeviceToggle(_)
+            | UpgradeAction::AllowPhoneControl
+            | UpgradeAction::RearmPhoneControl => Effort::Instant,
         };
         Upgrade { action, effort }
     }
@@ -358,6 +370,8 @@ pub const DEVICE_TOGGLES: &[(&str, bool)] = &[
     ("toggles", true),
     ("pc_actions", true),
     ("mirroring", true),
+    // Only an explicit owner action on this phone grants control to one PC.
+    ("phone_control", false),
     ("webcam", true),
     // The phone asks its user each time a PC wants its microphone.
     ("mic", true),
@@ -414,7 +428,27 @@ pub fn compute(device: DeviceId, inputs: MatrixInputs<'_>) -> CapabilityMatrix {
                             paths: inputs.paths,
                             toggles: inputs.toggles,
                         };
-                        evaluate(def, &ctx)
+                        let result = if def.id == "mirroring.control" && desktop.os != "macos"
+                            && !phone.caps.contains("mirror.input.request")
+                        {
+                            evaluate(&LEGACY_MIRROR_CONTROL, &ctx)
+                        } else { evaluate(def, &ctx) };
+                        // Mac app capture needs an explicit implementation
+                        // discriminator; INPUT_REQUEST alone also describes
+                        // old phones whose nonzero app path is unowned.
+                        // Windows retains its existing app-view matrix.
+                        if def.id == "mirroring.app_windows"
+                            && desktop.os == "macos"
+                            && result.0 == FeatureState::Available
+                            && !phone.caps.contains("mirror.app_windows_owned_v1")
+                        {
+                            (
+                                FeatureState::Unsupported { reason: UnsupportedReason::NotOnThisDevice },
+                                None,
+                            )
+                        } else {
+                            result
+                        }
                     }
                     None => FeatureState::Unsupported { reason: UnsupportedReason::DeviceKinds },
                 };
@@ -473,6 +507,14 @@ fn check(req: &Requirement, ctx: &Context<'_>) -> Check {
                 Unlock::Permission(p) => Check::Unlockable(Upgrade::new(UpgradeAction::GrantPermission(p))),
                 Unlock::Addon(addon) => Check::Unlockable(Upgrade::new(UpgradeAction::EnableAddon(addon))),
                 Unlock::UpdateApp => Check::Unlockable(Upgrade::new(UpgradeAction::UpdateApp(role))),
+                Unlock::PhoneControlOwner => {
+                    Check::Unlockable(Upgrade::new(if ctx.phone.caps.contains("mirror.control.stopped") {
+                        UpgradeAction::RearmPhoneControl
+                    } else {
+                        UpgradeAction::AllowPhoneControl
+                    }))
+                }
+                Unlock::Unavailable => Check::Impossible(UnsupportedReason::NotOnThisDevice),
             }
         }
         Requirement::Peer { id, unlock } | Requirement::Here { id, unlock } => {
@@ -487,6 +529,14 @@ fn check(req: &Requirement, ctx: &Context<'_>) -> Check {
                 Unlock::Power(_) | Unlock::UpdateApp => {
                     Check::Unlockable(Upgrade::new(UpgradeAction::UpdateApp(role)))
                 }
+                Unlock::PhoneControlOwner => {
+                    Check::Unlockable(Upgrade::new(if ctx.phone.caps.contains("mirror.control.stopped") {
+                        UpgradeAction::RearmPhoneControl
+                    } else {
+                        UpgradeAction::AllowPhoneControl
+                    }))
+                }
+                Unlock::Unavailable => Check::Impossible(UnsupportedReason::NotOnThisDevice),
             }
         }
         Requirement::PowerAtLeast(level) => {
@@ -653,6 +703,16 @@ const UPDATE: Unlock = Unlock::UpdateApp;
 
 /// Every feature, in display order. Capability IDs are listed in
 /// docs/protocol/capabilities.md.
+const LEGACY_MIRROR_CONTROL: FeatureDef = FeatureDef {
+    id: "mirroring.control",
+    group: FeatureGroup::Mirroring,
+    requires: &[
+        phone("mirror.capture", UPDATE), phone("mirror.input", ASSIST),
+        desktop("mirror.view", UPDATE), DeviceToggle("mirroring"),
+    ],
+    partial: None,
+};
+
 pub const FEATURES: &[FeatureDef] = &[
     // Device
     FeatureDef {
@@ -903,6 +963,9 @@ pub const FEATURES: &[FeatureDef] = &[
         requires: &[
             phone("mirror.capture", UPDATE),
             phone("mirror.input", ASSIST),
+            phone("mirror.input.request", Unlock::Unavailable),
+            phone("mirror.control.allowed", Unlock::PhoneControlOwner),
+            desktop("mirror.input.request", Unlock::Unavailable),
             desktop("mirror.view", UPDATE),
             DeviceToggle("mirroring"),
         ],
@@ -1052,6 +1115,8 @@ mod tests {
         "files.transfer",
         "photos.read",
         "mirror.capture",
+        "mirror.input.request",
+        "mirror.control.allowed",
         "mirror.audio.playback",
         "media.control",
         "media.remote",
@@ -1076,6 +1141,7 @@ mod tests {
         "input.inject",
         "deck.actions",
         "mirror.view",
+        "mirror.input.request",
         "mirror.listen",
         "camera.virtual",
         "camera.continuity",
@@ -1528,6 +1594,56 @@ mod tests {
         assert_eq!(
             m.state("camera.webcam"),
             Some(locked(UpgradeAction::EnableAddon("vcam"), Effort::Minutes(1)))
+        );
+    }
+}
+
+#[cfg(test)]
+mod owned_app_compatibility_tests {
+    use super::*;
+
+    fn app_matrix(owned: bool, desktop_os: &str) -> CapabilityMatrix {
+        let caps: &[&str] = if owned {
+            &["mirror.virtual_display", "mirror.app_windows_owned_v1"]
+        } else {
+            &["mirror.virtual_display"]
+        };
+        let phone = DeviceFacts {
+            kind: DeviceKind::Phone,
+            os: "android".into(),
+            os_ver: "16".into(),
+            power: PowerLevel::Elevated,
+            caps: caps.iter().map(|s| (*s).to_owned()).collect(),
+        };
+        let desktop = DeviceFacts {
+            kind: DeviceKind::Desktop,
+            os: desktop_os.into(),
+            os_ver: "test".into(),
+            power: PowerLevel::NotApplicable,
+            caps: ["mirror.view".to_owned()].into_iter().collect(),
+        };
+        let paths = Vec::new();
+        let toggles = HashMap::new();
+        compute(
+            DeviceId([7; 32]),
+            MatrixInputs { local: &desktop, peer: &phone, paths: &paths, toggles: &toggles },
+        )
+    }
+
+    #[test]
+    fn mac_app_windows_require_an_explicit_owned_contract() {
+        assert_eq!(app_matrix(true, "macos").state("mirroring.app_windows"), Some(FeatureState::Available));
+    }
+
+    #[test]
+    fn missing_owned_apps_stays_unavailable_on_mac_and_keeps_windows_compatibility() {
+        assert_eq!(
+            app_matrix(false, "macos").state("mirroring.app_windows"),
+            Some(FeatureState::Unsupported { reason: UnsupportedReason::NotOnThisDevice })
+        );
+        assert_eq!(
+            app_matrix(false, "windows").state("mirroring.app_windows"),
+            Some(FeatureState::Available)
         );
     }
 }

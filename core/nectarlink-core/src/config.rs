@@ -273,7 +273,8 @@ pub trait Platform: Send + Sync + 'static {
     /// agree) stream it with [`Node::mirror_open`](crate::Node::mirror_open).
     /// Or, with `options.app`, for an app in a window of its own: run it on
     /// a display of its own and stream that (no asking: that's Elevated).
-    /// The stream's config packets carry `options.session`. `Err` (a
+    /// The stream's config packets carry `options.session` and echo
+    /// `options.request`, the generation this request owns. `Err` (a
     /// reason for logs) when it can't.
     fn mirror_requested(
         &self,
@@ -283,13 +284,84 @@ pub trait Platform: Send + Sync + 'static {
         Err("this device doesn't share its screen".into())
     }
 
+    /// Original receiving connection supplied by core, not by the peer's body.
+    /// A platform retaining consent must carry it through every queued start.
+    fn mirror_requested_owned(
+        &self,
+        peer: &nectarlink_protocol::DeviceId,
+        options: &crate::MirrorStart,
+        _connection: u64,
+        _capture: u64,
+    ) -> Result<(), String> {
+        self.mirror_requested(peer, options)
+    }
+
     /// The PC stopped watching: stop sharing the screen or app window.
     fn mirror_stop_requested(&self, _peer: &nectarlink_protocol::DeviceId, _session: u32) {}
+
+    /// Upstream app-window route for peers that never negotiated ownership.
+    fn mirror_app_requested_legacy(
+        &self, peer: &nectarlink_protocol::DeviceId, options: &crate::MirrorStart, _connection: u64,
+    ) -> Result<(), String> {
+        self.mirror_requested(peer, options)
+    }
+
+    fn mirror_app_stop_requested_legacy(
+        &self, peer: &nectarlink_protocol::DeviceId, session: u32, _connection: u64,
+    ) {
+        self.mirror_stop_requested(peer, session);
+    }
+
+    fn mirror_app_input_legacy(
+        &self, peer: &nectarlink_protocol::DeviceId, session: u32, input: crate::MirrorInput,
+        _connection: u64, _generation: u64,
+    ) {
+        self.mirror_input(peer, session, input);
+    }
+
+    /// The remote viewer stopped this exact request. Async platform work must
+    /// retain request ownership through the actual capture teardown.
+    fn mirror_stop_requested_owned(
+        &self,
+        peer: &nectarlink_protocol::DeviceId,
+        session: u32,
+        _request: Option<u64>,
+        _connection: u64,
+        _capture: u64,
+    ) {
+        self.mirror_stop_requested(peer, session);
+    }
 
     /// The PC's mouse or keyboard on this phone's mirrored screen or app
     /// window (checked, and only while it offers `mirror.input`, or
     /// `mirror.virtual_display` for app windows). Must return quickly.
     fn mirror_input(&self, _peer: &nectarlink_protocol::DeviceId, _session: u32, _input: crate::MirrorInput) {
+    }
+
+    /// The PC's mouse or keyboard on this device's mirrored screen
+    /// (session 0), admitted under typing `generation`. A platform that
+    /// hands it to another thread before the OS sees it checks
+    /// [`crate::Node::mirror_typing_current`] with that generation right
+    /// before dispatch and drops it when that's false. Must return quickly.
+    fn mirror_screen_input(
+        &self,
+        peer: &nectarlink_protocol::DeviceId,
+        input: crate::MirrorInput,
+        _generation: u64,
+    ) {
+        self.mirror_input(peer, crate::MIRROR_SCREEN, input);
+    }
+
+    /// Safe phone-screen input with the original request/connection and durable
+    /// owner generation. Platforms offering MIRROR_INPUT_REQUEST must recheck
+    /// Node::mirror_control_input_current immediately before OS dispatch.
+    /// Default denies; it must not fall back to an unguarded injector.
+    fn mirror_control_input(
+        &self,
+        _peer: &nectarlink_protocol::DeviceId,
+        _input: crate::MirrorInput,
+        _context: crate::MirrorControlContext,
+    ) {
     }
 
     /// The PC's decoder needs a fresh start: encode a keyframe next.
@@ -303,6 +375,18 @@ pub trait Platform: Send + Sync + 'static {
         _session: u32,
         _width: u32,
         _height: u32,
+    ) {
+    }
+
+    /// Resize this exact accepted app capture. Recheck mirror_capture_current
+    /// immediately before the helper write if this callback posts work.
+    /// Default denies; never falls back to the unowned peer/session callback.
+    fn mirror_resize_requested_owned(
+        &self,
+        _peer: &nectarlink_protocol::DeviceId,
+        _width: u32,
+        _height: u32,
+        _context: crate::MirrorControlContext,
     ) {
     }
 
