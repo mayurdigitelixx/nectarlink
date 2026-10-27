@@ -2279,6 +2279,19 @@ impl Platform for TerminalPlatform {
         }
         Ok(())
     }
+    fn run_notification_action_owned(
+        &self,
+        context: nectarlink_core::NotificationActionContext,
+        key: &str,
+        action: &str,
+        reply: Option<&str>,
+    ) -> Result<(), NotificationError> {
+        if !context.is_current() {
+            return Err(NotificationError::NotFound);
+        }
+        self.run_notification_action(key, action, reply)
+    }
+
     fn remote_input(&self, _peer: &DeviceId, input: nectarlink_core::RemoteInput) -> Result<(), String> {
         println!("Remote input: {input:?}");
         Ok(())

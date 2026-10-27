@@ -285,7 +285,11 @@ pub fn apply(event: &NodeEvent) {
 /// Shows, updates or removes toasts after an event.
 pub fn update_toasts(event: &NodeEvent) {
     match event {
-        NodeEvent::NotificationPosted { device, notification } => show(*device, notification),
+        NodeEvent::NotificationPosted { device, notification } => {
+            #[cfg(target_os = "macos")]
+            toast::invalidate_copy_code_actions(&device.to_string(), &notification.key);
+            show(*device, notification, false);
+        }
         NodeEvent::NotificationRemoved { device, key } => {
             toasted(|t| t.get_mut(device).map(|keys| keys.remove(key)));
             live_toasts(|l| l.remove(&(*device, key.clone())));
@@ -293,10 +297,16 @@ pub fn update_toasts(event: &NodeEvent) {
             toast::remove(&device.to_string(), key);
         }
         NodeEvent::NotificationsReset { device, items } => {
+            let shown = toasted(|t| t.get(device).cloned().unwrap_or_default());
             for n in items {
-                if let Some(code) = notification_otp(n) {
+                let code = notification_otp(n);
+                if let Some(code) = code.clone() {
                     otp_codes(|c| c.insert((*device, n.key.clone()), code));
                 }
+                // The snapshot replaces known notifications without a new alert.
+                // Keep a one-shot copy only when this item still carries that code.
+                #[cfg(target_os = "macos")]
+                toast::retain_copy_code_if_unchanged(&device.to_string(), &n.key, code.as_deref());
             }
             let keep: HashSet<&str> = items.iter().map(|n| n.key.as_str()).collect();
             let gone: Vec<String> = toasted(|t| {
@@ -309,6 +319,10 @@ pub fn update_toasts(event: &NodeEvent) {
             otp_codes(|c| c.retain(|(d, k), _| d != device || keep.contains(k.as_str())));
             for key in gone {
                 toast::remove(&device.to_string(), &key);
+            }
+            // Refresh only prior banners, silently, so their action IDs match this snapshot.
+            for n in items.iter().filter(|n| shown.contains(&n.key)) {
+                show(*device, n, true);
             }
         }
         NodeEvent::PhoneToggles { device, toggles } => {
@@ -349,7 +363,7 @@ fn live_toast_progress(n: &Notification) -> Option<toast::Progress> {
     Some(toast::Progress { status, value, label })
 }
 
-fn show(device: DeviceId, n: &Notification) {
+fn show(device: DeviceId, n: &Notification, snapshot: bool) {
     // Cleared here already: the same post sent again doesn't pop up again.
     if core_host::host().hub.read(|s| s.is_cleared(device, n)) {
         return;
@@ -357,7 +371,9 @@ fn show(device: DeviceId, n: &Notification) {
     let otp = notification_otp(n);
     if let Some(code) = &otp {
         otp_codes(|c| c.insert((device, n.key.clone()), code.clone()));
-        maybe_auto_copy_otp(code);
+        if !snapshot {
+            maybe_auto_copy_otp(code);
+        }
     }
     let (device_name, icon, rule, image, phone_dnd) = core_host::host().hub.read(|s| {
         let dnd = s.toggles.get(&device).is_some_and(|t| t.dnd);
@@ -376,18 +392,23 @@ fn show(device: DeviceId, n: &Notification) {
     }
     let progress = live_toast_progress(n);
     let id = (device, n.key.clone());
-    if let Some(prog) = &progress {
-        let already_shown = live_toasts(|l| l.contains(&id));
-        if already_shown {
-            toast::update_progress(&device.to_string(), &n.key, prog.clone());
-            return;
-        }
-    } else {
+    let updating_live = progress.is_some() && live_toasts(|l| l.contains(&id));
+    if progress.is_none() {
         live_toasts(|l| l.remove(&id));
     }
     let mut actions: Vec<(String, String)> = Vec::new();
-    if otp.is_some() {
-        actions.push((ACTION_COPY_OTP.to_owned(), tr!("Notifications", "Copy code")));
+    if let Some(code) = otp.as_deref() {
+        #[cfg(target_os = "macos")]
+        let copy_action = if snapshot {
+            toast::existing_copy_code_action(&device.to_string(), &n.key, code)
+        } else {
+            toast::register_copy_code_action(&device.to_string(), &n.key, code)
+        };
+        #[cfg(not(target_os = "macos"))]
+        let copy_action = Some(ACTION_COPY_OTP.to_owned());
+        if let Some(copy_action) = copy_action {
+            actions.push((copy_action, tr!("Notifications", "Copy code")));
+        }
     }
     actions.extend(n.actions.iter().filter(|a| !a.reply).map(|a| (a.id.clone(), a.title.clone())));
     let reply = n.actions.iter().find(|a| a.reply);
@@ -404,7 +425,7 @@ fn show(device: DeviceId, n: &Notification) {
         image,
         actions,
         reply: reply.map(|a| (a.id.clone(), a.title.clone())),
-        silent: n.silent,
+        silent: n.silent || updating_live || snapshot,
         progress: progress.clone(),
         call: false,
     };
@@ -507,6 +528,15 @@ pub fn on_toast(event: ToastEvent) {
             }
             crate::bridge::app::request_activation();
         }
+        #[cfg(target_os = "macos")]
+        ToastEvent::Action { device, key, action } if action.starts_with(toast::LOCAL_COPY_CODE_PREFIX) => {
+            if let Some(code) = toast::take_copy_code_action(&device, &key, &action) {
+                copy_otp(&code);
+            }
+        }
+        #[cfg(target_os = "macos")]
+        ToastEvent::Action { action, .. } if action == ACTION_COPY_OTP => (),
+        #[cfg(not(target_os = "macos"))]
         ToastEvent::Action { device, key, action } if action == ACTION_COPY_OTP => {
             if let Ok(dev) = device.parse::<DeviceId>() {
                 let code = otp_codes(|c| c.get(&(dev, key.clone())).cloned()).or_else(|| {
@@ -657,5 +687,89 @@ mod tests {
         assert_eq!(p.status, "4 min");
         assert_eq!(p.value, Some(0.45));
         assert_eq!(p.label, "45%");
+    }
+
+    #[cfg(target_os = "macos")]
+    fn note_with(key: &str, text: &str) -> Notification {
+        let mut note = make_note(Some("Messages"), Some(text));
+        note.key = key.to_owned();
+        note
+    }
+
+    /// A still-present key is not in the toasted set, so this reset does not call `toast::remove`.
+    #[cfg(target_os = "macos")]
+    fn reset_copy(device: DeviceId, items: Vec<Notification>) {
+        update_toasts(&NodeEvent::NotificationsReset { device, items });
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn silent_reset_keeps_the_copy_action_for_the_same_code() {
+        let device = DeviceId([0x11; 32]);
+        let key = "nl-reset-same-code";
+        let action =
+            toast::register_copy_code_action(&device.to_string(), key, "482913").expect("registered");
+        reset_copy(device, vec![note_with(key, "Your verification code is 482913")]);
+        assert_eq!(
+            toast::existing_copy_code_action(&device.to_string(), key, "482913").as_deref(),
+            Some(action.as_str())
+        );
+        assert_eq!(
+            toast::take_copy_code_action(&device.to_string(), key, &action).as_deref(),
+            Some("482913")
+        );
+        assert_eq!(otp_codes(|c| c.get(&(device, key.to_owned())).cloned()).as_deref(), Some("482913"));
+        reset_copy(device, vec![note_with(key, "Your verification code is 482913")]);
+        assert!(toast::existing_copy_code_action(&device.to_string(), key, "482913").is_none());
+        assert!(toast::take_copy_code_action(&device.to_string(), key, &action).is_none());
+        toast::invalidate_copy_code_actions(&device.to_string(), key);
+        otp_codes(|c| c.remove(&(device, key.to_owned())));
+        toasted(|t| {
+            t.remove(&device);
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn silent_reset_retires_a_changed_or_missing_copy_action() {
+        let device = DeviceId([0x22; 32]);
+        let changed_key = "nl-reset-changed-code";
+        let missing_key = "nl-reset-missing-code";
+        let changed_action =
+            toast::register_copy_code_action(&device.to_string(), changed_key, "482913").expect("registered");
+        let missing_action =
+            toast::register_copy_code_action(&device.to_string(), missing_key, "482913").expect("registered");
+        otp_codes(|c| {
+            c.insert((device, changed_key.to_owned()), "482913".to_owned());
+            c.insert((device, missing_key.to_owned()), "482913".to_owned());
+        });
+        reset_copy(
+            device,
+            vec![
+                note_with(changed_key, "Your verification code is 111222"),
+                note_with(missing_key, "Please enter your login code"),
+            ],
+        );
+        assert!(toast::take_copy_code_action(&device.to_string(), changed_key, &changed_action).is_none());
+        assert!(toast::take_copy_code_action(&device.to_string(), missing_key, &missing_action).is_none());
+        assert!(toast::existing_copy_code_action(&device.to_string(), changed_key, "111222").is_none());
+        assert!(toast::existing_copy_code_action(&device.to_string(), missing_key, "482913").is_none());
+        assert_eq!(
+            otp_codes(|c| c.get(&(device, changed_key.to_owned())).cloned()).as_deref(),
+            Some("111222")
+        );
+        assert_eq!(
+            otp_codes(|c| c.get(&(device, missing_key.to_owned())).cloned()).as_deref(),
+            Some("482913")
+        );
+        toast::invalidate_copy_code_actions(&device.to_string(), changed_key);
+        toast::invalidate_copy_code_actions(&device.to_string(), missing_key);
+        otp_codes(|c| {
+            c.remove(&(device, changed_key.to_owned()));
+            c.remove(&(device, missing_key.to_owned()));
+        });
+        toasted(|t| {
+            t.remove(&device);
+        });
     }
 }

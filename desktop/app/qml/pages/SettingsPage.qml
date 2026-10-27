@@ -13,6 +13,7 @@ Item {
     property int selectedDeviceIndex: 0
     signal pairRequested
 
+    readonly property bool onMac: Qt.platform.os === "osx"
     readonly property bool wideLayout: page.width >= 680
 
     readonly property var categories: [
@@ -38,6 +39,9 @@ Item {
     }
 
     function syncSectionSideEffects() {
+        if (page.active && page.currentSection === "notifications" && page.onMac)
+            AppController.refreshToastsEnabled()
+
         Webcam.setPreviewVisible("settings", page.active && page.currentSection === "camera_audio"
                                  && page.Window.window !== null && page.Window.window.visible
                                  && page.Window.window.visibility !== Window.Minimized)
@@ -1918,6 +1922,48 @@ Item {
                     width: parent.width
                     Column {
                         width: parent.width
+
+                        ListRow {
+                            id: macBannerPermission
+                            visible: page.onMac
+                            width: parent.width
+                            iconPath: Icons.bell
+                            title: qsTr("Notification banners")
+                            readonly property string permission: AppController.notificationPermission
+                            readonly property string actionLabel: {
+                                if (permission === "not_determined")
+                                    return qsTr("Enable notifications")
+                                if (permission === "denied" || permission === "provisional")
+                                    return qsTr("Open notification settings")
+                                return ""
+                            }
+                            description: {
+                                if (permission === "authorized")
+                                    return qsTr("Banners are allowed. They use this app's name and icon.")
+                                if (permission === "denied")
+                                    return qsTr("Notification banners are turned off for this app in System Settings.")
+                                if (permission === "provisional")
+                                    return qsTr("Only quiet notifications are allowed. Allow alerts in System Settings to show banners.")
+                                if (permission === "not_determined")
+                                    return qsTr("This app has not asked to show notification banners yet.")
+                                return qsTr("Checking whether this app is allowed to show notification banners.")
+                            }
+                            Button {
+                                visible: macBannerPermission.actionLabel.length > 0
+                                width: visible ? implicitWidth : 0
+                                height: visible ? implicitHeight : 0
+                                variant: "tonal"
+                                size: "sm"
+                                text: macBannerPermission.actionLabel
+                                onClicked: {
+                                    if (macBannerPermission.permission === "not_determined")
+                                        AppController.enableNotifications()
+                                    else
+                                        AppController.openNotificationSettings()
+                                }
+                            }
+                        }
+                        Divider { visible: page.onMac; width: parent.width }
 
                         // Row 1: Follow phone Do not disturb | Forward PC notifications
                         Item {

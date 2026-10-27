@@ -83,6 +83,19 @@ impl Platform for RecordingPlatform {
         self.actions.lock().unwrap().push((key.to_owned(), action.to_owned(), reply.map(str::to_owned)));
         Ok(())
     }
+    fn run_notification_action_owned(
+        &self,
+        context: nectarlink_core::NotificationActionContext,
+        key: &str,
+        action: &str,
+        reply: Option<&str>,
+    ) -> Result<(), NotificationError> {
+        if !context.is_current() {
+            return Err(NotificationError::NotFound);
+        }
+        self.run_notification_action(key, action, reply)
+    }
+
     fn set_clipboard(&self, text: &str) -> Result<(), String> {
         self.clipboard.lock().unwrap().push(text.to_owned());
         Ok(())

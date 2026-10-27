@@ -2590,6 +2590,19 @@ impl From<StorageFailure> for core::StorageError {
     }
 }
 
+/// Original Core notification authority; the app cannot mint or retarget it.
+#[derive(Debug, uniffi::Object)]
+pub struct NotificationActionContext(core::NotificationActionContext);
+
+#[uniffi::export]
+impl NotificationActionContext {
+    /// Check immediately before sending the OS action, after any platform queue.
+    pub fn is_current(&self) -> bool {
+        self.0.is_current()
+    }
+}
+
+
 /// What the app does for the core: ring the phone, act on its
 /// notifications.
 #[uniffi::export(with_foreign)]
@@ -2603,6 +2616,14 @@ pub trait Platform: Send + Sync {
     /// action.
     fn run_notification_action(
         &self,
+        key: String,
+        action: String,
+        reply: Option<String>,
+    ) -> Result<(), NotificationFailure>;
+    /// Retains the original Core owner through OS dispatch. Recheck it at execution.
+    fn run_notification_action_owned(
+        &self,
+        context: Arc<NotificationActionContext>,
         key: String,
         action: String,
         reply: Option<String>,
@@ -2821,6 +2842,20 @@ impl core::Platform for PlatformAdapter {
         reply: Option<&str>,
     ) -> Result<(), core::NotificationError> {
         Ok(self.0.run_notification_action(key.to_owned(), action.to_owned(), reply.map(str::to_owned))?)
+    }
+    fn run_notification_action_owned(
+        &self,
+        context: core::NotificationActionContext,
+        key: &str,
+        action: &str,
+        reply: Option<&str>,
+    ) -> Result<(), core::NotificationError> {
+        Ok(self.0.run_notification_action_owned(
+            Arc::new(NotificationActionContext(context)),
+            key.to_owned(),
+            action.to_owned(),
+            reply.map(str::to_owned),
+        )?)
     }
     fn set_clipboard(&self, text: &str) -> Result<(), String> {
         if self.0.set_clipboard(text.to_owned()) { Ok(()) } else { Err("the clipboard rejected it".into()) }

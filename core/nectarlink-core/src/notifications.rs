@@ -9,7 +9,10 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use nectarlink_protocol::{
@@ -44,11 +47,115 @@ pub enum NotificationError {
     Failed(String),
 }
 
+/// Original notification action authority, retained until the platform executes it.
+/// Contains no notification content, reply text, or wire-visible identifier.
+#[derive(Clone)]
+pub struct NotificationActionContext {
+    shared: Arc<Shared>,
+    session: Arc<Session>,
+    active: Arc<AtomicBool>,
+}
+
+impl std::fmt::Debug for NotificationActionContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("NotificationActionContext")
+    }
+}
+
+impl NotificationActionContext {
+    fn new(shared: &Arc<Shared>, session: &Arc<Session>) -> Option<Self> {
+        // Admission and the actual permission writes use the same short lock.
+        // A queued action cannot capture a fresh token during an OFF/ON update.
+        let mut authority = shared.notifications.action_authority();
+        if !Self::owner_current(shared, session) {
+            return None;
+        }
+        let active = authority.for_peer(session.peer, session);
+        Some(Self { shared: shared.clone(), session: session.clone(), active })
+    }
+
+    /// Check immediately before the OS action, including after any platform queue.
+    /// A replacement Node or connection can never acquire this action's authority.
+    pub fn is_current(&self) -> bool {
+        Self::owner_current(&self.shared, &self.session)
+            // Read last: removal followed by regrant still retires the captured token.
+            && self.active.load(Ordering::Acquire)
+    }
+
+    fn owner_current(shared: &Shared, session: &Arc<Session>) -> bool {
+        !shared.cancel.is_cancelled()
+            && !session.cancel.is_cancelled()
+            && shared.store.is_paired(&session.peer).unwrap_or(false)
+            && shared.session(&session.peer).is_some_and(|live| Arc::ptr_eq(&live, session))
+            && allowed(shared, &session.peer).is_ok()
+    }
+}
+
+/// One current token per peer with an admitted action. The token is bound to
+/// the session that admitted it. A different session retires that token.
+/// Revocation removes it. Retained contexts keep the retired token, and a
+/// later admission gets a new one.
+#[derive(Default)]
+pub(crate) struct ActionAuthority {
+    peers: HashMap<DeviceId, PeerToken>,
+}
+
+struct PeerToken {
+    active: Arc<AtomicBool>,
+    session_ptr: usize,
+}
+
+impl ActionAuthority {
+    fn for_peer(&mut self, peer: DeviceId, session: &Arc<Session>) -> Arc<AtomicBool> {
+        self.token_for(peer, Arc::as_ptr(session) as usize)
+    }
+
+    /// Returns the live token for this session pointer. A different pointer
+    /// releases the previous token before the new one is stored.
+    fn token_for(&mut self, peer: DeviceId, session_ptr: usize) -> Arc<AtomicBool> {
+        if let Some(existing) = self.peers.get(&peer) {
+            if existing.session_ptr == session_ptr {
+                return existing.active.clone();
+            }
+            existing.active.store(false, Ordering::Release);
+        }
+        let active = Arc::new(AtomicBool::new(true));
+        self.peers.insert(peer, PeerToken { active: active.clone(), session_ptr });
+        active
+    }
+
+    /// Retires the token only when it still belongs to this session. A newer
+    /// admission for the same peer is left in place.
+    pub(crate) fn revoke_session(&mut self, peer: &DeviceId, session: &Arc<Session>) {
+        self.retire_if_session(peer, Arc::as_ptr(session) as usize);
+    }
+
+    fn retire_if_session(&mut self, peer: &DeviceId, session_ptr: usize) {
+        let matches = self.peers.get(peer).is_some_and(|token| token.session_ptr == session_ptr);
+        if matches && let Some(token) = self.peers.remove(peer) {
+            token.active.store(false, Ordering::Release);
+        }
+    }
+
+    pub(crate) fn revoke_peer(&mut self, peer: &DeviceId) {
+        if let Some(token) = self.peers.remove(peer) {
+            token.active.store(false, Ordering::Release);
+        }
+    }
+
+    pub(crate) fn revoke_all(&mut self) {
+        for (_, token) in self.peers.drain() {
+            token.active.store(false, Ordering::Release);
+        }
+    }
+}
+
 /// The phone's current notifications, plus app icons for sending once per
 /// session.
 #[derive(Default)]
 pub(crate) struct Feed {
     inner: Mutex<FeedState>,
+    action_authority: Mutex<ActionAuthority>,
 }
 
 #[derive(Default)]
@@ -62,6 +169,10 @@ struct FeedState {
 }
 
 impl Feed {
+    pub(crate) fn action_authority(&self) -> std::sync::MutexGuard<'_, ActionAuthority> {
+        self.action_authority.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, FeedState> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -353,17 +464,25 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
             });
             let answer = match allowed(shared, &peer) {
                 Err(answer) => answer,
-                Ok(()) => {
-                    let platform = shared.platform.clone();
-                    match run_blocking(move || {
-                        platform.run_notification_action(&key, &action, reply.as_deref())
-                    })
-                    .await
-                    {
-                        Ok(()) => Envelope::empty(types::OK),
-                        Err(e) => error_reply(e),
+                Ok(()) => match NotificationActionContext::new(shared, session) {
+                    None => {
+                        Envelope::error(ErrorCode::Denied, "notification action owner is no longer current")
                     }
-                }
+                    Some(context) => {
+                        let platform = shared.platform.clone();
+                        match run_blocking(move || {
+                            if !context.is_current() {
+                                return Err(NotificationError::NotFound);
+                            }
+                            platform.run_notification_action_owned(context, &key, &action, reply.as_deref())
+                        })
+                        .await
+                        {
+                            Ok(()) => Envelope::empty(types::OK),
+                            Err(e) => error_reply(e),
+                        }
+                    }
+                },
             };
             session.send(answer.reply_to(env.id)).await?;
         }
@@ -374,7 +493,7 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
 
 /// Whether a PC may act on this phone's notifications; the error reply if not.
 fn allowed(shared: &Shared, peer: &DeviceId) -> std::result::Result<(), Envelope> {
-    if !shared.we_offer("notify.reply") {
+    if !shared.local_capabilities().iter().any(|c| c == "notify.reply") {
         return Err(Envelope::error(ErrorCode::Unsupported, "notification actions are not available"));
     }
     if !shared.notifications_allowed(peer) {
@@ -403,3 +522,42 @@ async fn run_blocking(
 
 /// Per-session record of which apps' icons were sent.
 pub(crate) type SentIcons = Mutex<HashSet<String>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn peer() -> DeviceId {
+        DeviceId([7; 32])
+    }
+
+    #[test]
+    fn same_session_reuses_the_action_token() {
+        let feed = Feed::default();
+        let mut authority = feed.action_authority();
+        let session = 0xA11usize;
+        let first = authority.token_for(peer(), session);
+        let second = authority.token_for(peer(), session);
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(first.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn a_different_session_retires_the_previous_action_token() {
+        let feed = Feed::default();
+        let mut authority = feed.action_authority();
+        let id = peer();
+        let old = authority.token_for(id, 0x01);
+        let current = authority.token_for(id, 0x02);
+        assert!(!Arc::ptr_eq(&old, &current));
+        assert!(!old.load(Ordering::Acquire));
+        assert!(current.load(Ordering::Acquire));
+        authority.retire_if_session(&id, 0x01);
+        assert!(current.load(Ordering::Acquire));
+        authority.retire_if_session(&id, 0x02);
+        assert!(!current.load(Ordering::Acquire));
+        let later = authority.token_for(id, 0x03);
+        assert!(later.load(Ordering::Acquire));
+        assert!(!Arc::ptr_eq(&later, &current));
+    }
+}

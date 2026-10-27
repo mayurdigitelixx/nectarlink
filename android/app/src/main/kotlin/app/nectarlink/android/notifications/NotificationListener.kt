@@ -2,6 +2,7 @@
 package app.nectarlink.android.notifications
 
 import android.app.AppOpsManager
+import android.app.Notification
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -12,6 +13,7 @@ import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import androidx.core.app.NotificationManagerCompat
 import app.nectarlink.android.NectarlinkApplication
+import app.nectarlink.core.NotificationFailure
 
 /**
  * Hands this phone's notifications to the core, which mirrors them to the
@@ -24,6 +26,7 @@ import app.nectarlink.android.NectarlinkApplication
 class NotificationListener : NotificationListenerService() {
     private val core get() = (application as NectarlinkApplication).core
     private val reader by lazy { NotificationReader(this) }
+    private val actionRevisions = NotificationActionRegistry<StatusBarNotification>()
     private val limiter = LiveRateLimiter { notification -> core.notificationPosted(notification) }
     private val worker = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
         Thread(r, "nectarlink-notif-reader").apply { isDaemon = true }
@@ -35,18 +38,22 @@ class NotificationListener : NotificationListenerService() {
     override fun onListenerConnected() {
         instance = this
         if (isPcActive()) applyHostHints(true)
+        val snapshot = actionSnapshot() ?: emptyList()
         work {
-            val snapshot = runCatching { activeNotifications?.toList().orEmpty() }.getOrDefault(emptyList())
             val ranking = runCatching { currentRanking }.getOrNull()
             limiter.clear()
             sent.clear()
-            val items = snapshot.mapNotNull { reader.read(it, ranking, update = false) }
+            val items = snapshot.mapNotNull { revision ->
+                mirrored(revision, ranking, update = false)
+                    ?.takeIf { actionRevisions.current(revision) }
+            }
             sent.addAll(items.map { it.key })
             core.notificationAccessChanged(true, items)
         }
     }
 
     override fun onListenerDisconnected() {
+        actionRevisions.clear()
         if (instance === this) instance = null
         work {
             limiter.clear()
@@ -57,8 +64,13 @@ class NotificationListener : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification, rankingMap: RankingMap?) {
         val key = sbn.key
+        // Invalidate before queued reader work: a stale desktop click must not
+        // resolve an index against the replacement notification.
+        val revision = actionRevisions.posted(key, sbn)
         work {
-            val notification = reader.read(sbn, rankingMap, update = key in sent)
+            if (!actionRevisions.current(revision)) return@work
+            val notification = mirrored(revision, rankingMap, update = key in sent)
+            if (!actionRevisions.current(revision)) return@work
             if (notification == null) {
                 // Something we mirrored may have turned into something we don't
                 // (e.g. it became ongoing); take it away on the PC.
@@ -73,6 +85,7 @@ class NotificationListener : NotificationListenerService() {
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
         val key = sbn.key
+        actionRevisions.remove(key)
         work {
             limiter.cancel(key)
             if (sent.remove(key)) core.notificationRemoved(key)
@@ -80,6 +93,7 @@ class NotificationListener : NotificationListenerService() {
     }
 
     override fun onDestroy() {
+        actionRevisions.clear()
         if (instance === this) instance = null
         // Android's onDestroy calls onListenerDisconnected, which still needs
         // the worker; shut it down after (queued work still runs).
@@ -106,16 +120,81 @@ class NotificationListener : NotificationListenerService() {
     }
 
     /** Re-reads active notifications after Elevated grants sensitive notification access. */
-    internal fun refreshActive() {
+    internal fun refreshActive() = refreshSnapshot()
+
+    /**
+     * Retires action revisions before replacing the mirrored snapshot.
+     */
+    private fun refreshSnapshot() {
+        // Retire every offered action synchronously, even if the snapshot query fails.
+        val snapshot = actionSnapshot()
         work {
-            val items = runCatching {
-                val ranking = currentRanking
-                activeNotifications.orEmpty().mapNotNull { reader.read(it, ranking, update = true) }
-            }.getOrDefault(emptyList())
+            limiter.clear()
+            if (snapshot == null) return@work
+            val ranking = runCatching { currentRanking }.getOrNull()
+            val items = snapshot.mapNotNull { revision ->
+                mirrored(revision, ranking, update = true)
+                    ?.takeIf { actionRevisions.current(revision) }
+            }
+            sent.clear()
             sent.addAll(items.map { it.key })
             core.notificationsRefreshed(items)
         }
     }
+
+    /**
+     * Structural and Android-user eligibility is checked before reading content.
+     * Only actions actually offered to the peer are admitted later.
+     */
+    private fun mirrored(
+        revision: NotificationActionRegistry.Revision<StatusBarNotification>,
+        ranking: RankingMap?,
+        update: Boolean,
+    ): app.nectarlink.core.Notification? {
+        if (!actionRevisions.current(revision)) return null
+        val sbn = revision.value
+        if (!eligible(sbn)) return null
+        val notification = reader.read(sbn, ranking, update, revision.id) ?: return null
+        val offered = notification.actions.mapNotNull { it.id.substringAfterLast(':').toIntOrNull() }.toSet()
+        if (!actionRevisions.offer(revision, offered)) return null
+        return notification
+    }
+
+    /** Preserve the reader's structural policy and reject other Android users. */
+    private fun eligible(sbn: StatusBarNotification): Boolean =
+        sbn.user == android.os.Process.myUserHandle() && reader.actionEligible(sbn)
+
+    /** Capture metadata before queueing reads, serialized with post/removal invalidation. */
+    private fun actionSnapshot(): List<NotificationActionRegistry.Revision<StatusBarNotification>>? =
+        synchronized(actionRevisions) {
+            actionRevisions.clear()
+            val snapshot = runCatching { activeNotifications?.toList().orEmpty() }.getOrNull()
+                ?: return@synchronized null
+            snapshot.map { actionRevisions.posted(it.key, it) }
+        }
+
+    /** Resolve only an action actually offered for this still-current observed revision. */
+    internal fun withCurrentAction(key: String, id: String, execute: (Notification.Action) -> Unit) {
+        val found = actionRevisions.useAction(key, id) { observed, index ->
+            if (instance !== this) throw NotificationFailure.Unsupported()
+            val current = find(key) ?: throw NotificationFailure.NotFound()
+            if (current.key != observed.key || current.packageName != observed.packageName ||
+                (Build.VERSION.SDK_INT >= 29 && current.uid != observed.uid) || current.user != observed.user ||
+                current.postTime != observed.postTime || !eligible(current)
+            ) throw NotificationFailure.NotFound()
+            val offered = observed.notification.actions?.getOrNull(index) ?: throw NotificationFailure.NotFound()
+            val target = current.notification.actions?.getOrNull(index) ?: throw NotificationFailure.NotFound()
+            if (offered.actionIntent == null || target.actionIntent != offered.actionIntent ||
+                target.title?.toString() != offered.title?.toString() ||
+                inputIdentity(target) != inputIdentity(offered)
+            ) throw NotificationFailure.NotFound()
+            execute(target)
+        }
+        if (!found) throw NotificationFailure.NotFound()
+    }
+
+    private fun inputIdentity(action: Notification.Action): List<Pair<String, Boolean>> =
+        action.remoteInputs.orEmpty().map { it.resultKey to it.allowFreeFormInput }
 
     /** What a PC asks for, on the listener that's connected now. */
     internal fun dismiss(key: String) = cancelNotification(key)

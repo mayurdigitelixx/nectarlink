@@ -66,6 +66,8 @@ pub mod qobject {
         #[qproperty(QString, phone_colors)]
         /// Whether Windows shows this app's notifications.
         #[qproperty(bool, toasts_enabled)]
+        /// Mac notification authorization; empty on other platforms.
+        #[qproperty(QString, notification_permission)]
         #[qproperty(QString, version)]
         /// The Connection Doctor's findings, as JSON: [{ id, outcome:
         /// "ok" | "warn" | "fail", title, detail, fix? }].
@@ -320,6 +322,11 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "refreshToastsEnabled"]
         fn refresh_toasts_enabled(self: Pin<&mut AppController>);
+        /// Explicit user action; startup and background posts never request permission.
+        #[qinvokable]
+        fn enable_notifications(self: Pin<&mut AppController>);
+        #[qinvokable]
+        fn open_notification_settings(self: Pin<&mut AppController>);
 
         /// Opens the Connection Doctor and checks the connection.
         #[qinvokable]
@@ -431,6 +438,7 @@ pub struct AppControllerRust {
     wallpaper_colors: QString,
     phone_colors: QString,
     toasts_enabled: bool,
+    notification_permission: QString,
     version: QString,
     doctor_checks: QString,
     doctor_busy: bool,
@@ -763,6 +771,16 @@ impl cxx_qt::Initialize for qobject::AppController {
         self.as_mut().refresh_localsend_state();
         let qt = self.qt_thread();
         *CONTROLLER.get_or_init(Mutex::default).lock().unwrap_or_else(|e| e.into_inner()) = Some(qt.clone());
+        #[cfg(target_os = "macos")]
+        {
+            let notification_qt = qt.clone();
+            win::toast::set_authorization_listener(move |_auth| {
+                let _ = notification_qt.queue(move |mut object| {
+                    object.as_mut().set_notification_permission(QString::from(win::toast::authorization().label()));
+                });
+            });
+            self.as_mut().set_notification_permission(QString::from(win::toast::authorization().label()));
+        }
         if QUIT_REQUESTED.load(Ordering::Acquire) {
             let _ = qt.queue(|object| object.quit_requested());
         }
@@ -1526,8 +1544,25 @@ impl qobject::AppController {
         // Also when the window comes back to the front: battery saver may
         // have changed meanwhile.
         self.as_mut().set_power_saver(win::power_saver());
-        self.set_toasts_enabled(win::toast::enabled());
+        self.as_mut().set_toasts_enabled(win::toast::enabled());
+        #[cfg(target_os = "macos")]
+        {
+            self.as_mut().set_notification_permission(QString::from(win::toast::authorization().label()));
+            win::toast::refresh_authorization();
+        }
         core_host::spawn(core_host::refresh_wake());
+    }
+
+    pub fn enable_notifications(self: Pin<&mut Self>) {
+        let _ = self;
+        #[cfg(target_os = "macos")]
+        win::toast::request_authorization();
+    }
+
+    pub fn open_notification_settings(self: Pin<&mut Self>) {
+        let _ = self;
+        #[cfg(target_os = "macos")]
+        win::toast::open_notification_settings();
     }
 
     pub fn ring(self: Pin<&mut Self>, device: &QString, on: bool) {

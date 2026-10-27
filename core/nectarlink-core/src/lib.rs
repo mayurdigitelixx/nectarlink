@@ -139,7 +139,7 @@ pub use nectarlink_protocol::{
     pairing::PairingUri,
 };
 pub use node::{DataRetentionCounts, Node, PeerDiagnostics};
-pub use notifications::{NotificationError, SHOW as NOTIFY_SHOW};
+pub use notifications::{NotificationActionContext, NotificationError, SHOW as NOTIFY_SHOW};
 pub use palette::{
     ACHROMATIC_SEED_RGB, MAX_SAMPLE_SIDE, Palette as ThemePaletteMap, RolePalette, ThemeScheme,
     achromatic_scheme, downsample_rgb, downsample_rgba, extract_artwork_scheme_rgb,

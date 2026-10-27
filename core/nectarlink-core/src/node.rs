@@ -996,13 +996,18 @@ impl Shared {
             transfer::cleanup_staging_id(self, id);
         }
 
-        let existed = self.store.remove_peer(peer)?;
-        if let Some(sup) = lock(&self.supervisors).remove(peer) {
-            sup.cancel.cancel();
-        }
-        if let Some(session) = lock(&self.sessions).remove(peer) {
-            session.close(CLOSE_NORMAL, b"unpaired");
-        }
+        let existed = {
+            let mut actions = self.notifications.action_authority();
+            actions.revoke_peer(peer);
+            let existed = self.store.remove_peer(peer)?;
+            if let Some(sup) = lock(&self.supervisors).remove(peer) {
+                sup.cancel.cancel();
+            }
+            if let Some(session) = lock(&self.sessions).remove(peer) {
+                session.close(CLOSE_NORMAL, b"unpaired");
+            }
+            existed
+        };
         lock(&self.links).remove(peer);
         lock(&self.lan_seen).remove(peer);
         lock(&self.dial_failures).remove(peer);
@@ -1050,6 +1055,7 @@ impl Shared {
             conn.close(VarInt::from_u32(CLOSE_NORMAL), b"reconnect off");
             return None;
         }
+        let mut replaced_session = None;
         let mut sessions = lock(&self.sessions);
         if let Some(existing) = sessions.get(&peer).filter(|s| s.is_alive()) {
             let keep_existing = existing.dialer != dialer && existing.dialer < dialer;
@@ -1058,6 +1064,7 @@ impl Shared {
                 conn.close(VarInt::from_u32(CLOSE_DUPLICATE), b"duplicate");
                 return None;
             }
+            replaced_session = Some(existing.clone());
             existing.close(CLOSE_DUPLICATE, b"duplicate");
         }
 
@@ -1080,6 +1087,9 @@ impl Shared {
         });
         sessions.insert(peer, session.clone());
         drop(sessions);
+        if let Some(previous) = replaced_session {
+            self.notifications.action_authority().revoke_session(&previous.peer, &previous);
+        }
         lock(&self.dial_failures).remove(&peer);
 
         tracing::info!(peer = %peer.short(), path = ?session.path(), "connected");
@@ -1161,6 +1171,7 @@ impl Shared {
                 self.set_link(ended.peer, LinkState::Offline { last_seen: Some(crate::now_unix()) });
             }
             drop(sessions);
+            self.notifications.action_authority().revoke_session(&ended.peer, ended);
             let _ = self.store.clear_send_queue_retry_delays(&ended.peer);
             self.queue_notify.notify_waiters();
         }
@@ -1640,6 +1651,7 @@ impl Node {
     /// Stops all sessions and networking.
     pub async fn shutdown(&self) {
         self.shared.cancel.cancel();
+        self.shared.notifications.action_authority().revoke_all();
         self.shared.localsend.stop(&self.shared);
         let sessions: Vec<_> = lock(&self.shared.sessions).drain().map(|(_, s)| s).collect();
         for session in sessions {
@@ -1903,7 +1915,15 @@ impl Node {
         if !self.shared.store.is_paired(&peer)? {
             return Err(Error::NotPaired);
         }
-        self.shared.store.set_toggle(&peer, toggle, enabled)?;
+        if toggle == notifications::TOGGLE {
+            let mut actions = self.shared.notifications.action_authority();
+            if !enabled {
+                actions.revoke_peer(&peer);
+            }
+            self.shared.store.set_toggle(&peer, toggle, enabled)?;
+        } else {
+            self.shared.store.set_toggle(&peer, toggle, enabled)?;
+        }
         self.shared.refresh_capabilities(&peer);
         if toggle == notifications::TOGGLE {
             self.notifications_toggled(peer, enabled);
@@ -3449,10 +3469,18 @@ impl Node {
     /// beyond the built-in ones (they depend on permissions and add-ons).
     pub async fn update_power(&self, power: PowerLevel, extra_capabilities: Vec<String>) {
         let caps = {
+            let mut actions = self.shared.notifications.action_authority();
             let mut local = self.shared.local.write().unwrap_or_else(|e| e.into_inner());
+            let before = local.capabilities();
             local.power = power;
             local.extra_capabilities = extra_capabilities;
-            local.capabilities()
+            let caps = local.capabilities();
+            if before.iter().any(|cap| cap == "notify.reply")
+                && !caps.iter().any(|cap| cap == "notify.reply")
+            {
+                actions.revoke_all();
+            }
+            caps
         };
         let update = HelloUpdate { power: Some(power), caps: Some(caps), device: None };
         if let Ok(env) = Envelope::new(types::HELLO_UPDATE, &update) {

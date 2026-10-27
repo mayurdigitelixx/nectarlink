@@ -187,6 +187,19 @@ pub trait Platform: Send + Sync + 'static {
         Err(NotificationError::Unsupported)
     }
 
+    /// Execute only while the original action authority is still current. Platforms
+    /// must recheck the context immediately before the OS action, after any queue.
+    /// The legacy callback is deliberately not a fallback for owned actions.
+    fn run_notification_action_owned(
+        &self,
+        _context: crate::NotificationActionContext,
+        _key: &str,
+        _action: &str,
+        _reply: Option<&str>,
+    ) -> Result<(), NotificationError> {
+        Err(NotificationError::Unsupported)
+    }
+
     /// Put text on this device's clipboard (a paired device sent it).
     /// `Err` holds a reason for logs, never the text.
     fn set_clipboard(&self, _text: &str) -> Result<(), String> {

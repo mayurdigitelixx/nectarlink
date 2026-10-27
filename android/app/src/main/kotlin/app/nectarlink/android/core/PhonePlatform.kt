@@ -268,28 +268,40 @@ internal class PhonePlatform(
     }
 
     override fun runNotificationAction(key: String, action: String, reply: String?) {
-        val listener = NotificationListener.instance ?: throw NotificationFailure.Unsupported()
-        val sbn = listener.find(key) ?: throw NotificationFailure.NotFound()
-        val target = action.toIntOrNull()?.let { sbn.notification.actions?.getOrNull(it) }
-            ?: throw NotificationFailure.NotFound()
-        val intent = target.actionIntent ?: throw NotificationFailure.NotFound()
+        throw NotificationFailure.Unsupported()
+    }
 
-        // A reply goes to the app the way the notification shade sends it:
-        // the text as the result of the action's free-form input.
-        val fillIn = Intent()
-        if (reply != null) {
-            val inputs = target.remoteInputs.orEmpty().filter { it.allowFreeFormInput }
-            if (inputs.isEmpty()) throw NotificationFailure.NotFound()
-            val results = Bundle().apply { inputs.forEach { putCharSequence(it.resultKey, reply) } }
-            RemoteInput.addResultsToIntent(inputs.toTypedArray(), fillIn, results)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                RemoteInput.setResultsSource(fillIn, RemoteInput.SOURCE_FREE_FORM_INPUT)
+    override fun runNotificationActionOwned(
+        context: app.nectarlink.core.NotificationActionContext,
+        key: String,
+        action: String,
+        reply: String?,
+    ) {
+        if (!context.isCurrent()) throw NotificationFailure.NotFound()
+        val listener = NotificationListener.instance ?: throw NotificationFailure.Unsupported()
+        listener.withCurrentAction(key, action) { target ->
+            val intent = target.actionIntent ?: throw NotificationFailure.NotFound()
+
+            // A reply goes to the app the way the notification shade sends it:
+            // the text as the result of the action's free-form input.
+            val fillIn = Intent()
+            if (reply != null) {
+                val inputs = target.remoteInputs.orEmpty().filter { it.allowFreeFormInput }
+                if (inputs.isEmpty()) throw NotificationFailure.NotFound()
+                val results = Bundle().apply { inputs.forEach { putCharSequence(it.resultKey, reply) } }
+                RemoteInput.addResultsToIntent(inputs.toTypedArray(), fillIn, results)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    RemoteInput.setResultsSource(fillIn, RemoteInput.SOURCE_FREE_FORM_INPUT)
+                }
             }
-        }
-        try {
-            intent.send(context, 0, fillIn, null, null, null, sendOptions())
-        } catch (e: PendingIntent.CanceledException) {
-            throw NotificationFailure.NotFound()
+            val options = sendOptions()
+            try {
+                // withCurrentAction holds the revision monitor through this check and send.
+                if (!context.isCurrent()) throw NotificationFailure.NotFound()
+                intent.send(this.context, 0, fillIn, null, null, null, options)
+            } catch (e: PendingIntent.CanceledException) {
+                throw NotificationFailure.NotFound()
+            }
         }
     }
 
