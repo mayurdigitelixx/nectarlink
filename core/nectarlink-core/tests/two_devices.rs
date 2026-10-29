@@ -3399,6 +3399,25 @@ async fn the_phone_negotiates_hevc_only_with_an_advertising_receiver() {
     webcam_round_trip(true).await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn screen_mirroring_prefers_hevc_only_when_the_receiver_advertises_it() {
+    let mut pc = device_with("Desktop", DeviceKind::Desktop, &[nectarlink_core::MIRROR_HEVC]).await;
+    let mut phone = device_with("Pixel", DeviceKind::Phone, &[]).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let pc_id = pc.node.device_id();
+
+    assert_eq!(phone.node.mirror_codecs(pc_id).unwrap(), ["h265", "h264"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn screen_mirroring_uses_h264_for_receivers_without_hevc_support() {
+    let mut pc = device_with("Desktop", DeviceKind::Desktop, &[]).await;
+    let mut phone = device_with("Pixel", DeviceKind::Phone, &[]).await;
+    pair_qr(&mut pc, &mut phone).await;
+
+    assert_eq!(phone.node.mirror_codecs(pc.node.device_id()).unwrap(), ["h264"]);
+}
+
 async fn webcam_round_trip(hevc: bool) {
     use nectarlink_core::{MirrorSend, PacketKind};
     let mut caps = vec![nectarlink_core::WEBCAM_VIRTUAL];

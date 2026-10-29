@@ -14,6 +14,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.Display
+import android.view.Surface
 import android.view.WindowManager
 import app.nectarlink.core.MirrorSendResult
 import app.nectarlink.core.MirrorStream
@@ -51,6 +52,8 @@ internal class ScreenEncoder(
 
     private data class Size(val width: Int, val height: Int, val dpi: Int)
 
+    private data class Encoder(val name: String, val codec: MediaCodec, val surface: Surface)
+
     private val rotation = object : DisplayManager.DisplayListener {
         override fun onDisplayChanged(displayId: Int) {
             if (displayId != Display.DEFAULT_DISPLAY) return
@@ -82,28 +85,30 @@ internal class ScreenEncoder(
             while (running) {
                 size = screenSize()
                 resizeWanted = false
-                val (activeCodecName, codec) = encoder(size)
-                val surface = codec.createInputSurface()
-                codec.start()
-                val current = display
-                if (current == null) {
-                    display = projection.createVirtualDisplay(
-                        "Nectarlink", size.width, size.height, size.dpi,
-                        DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, surface, null, null,
-                    )
-                } else {
-                    current.resize(size.width, size.height, size.dpi)
-                    current.surface = surface
+                val active = encoder(size)
+                try {
+                    val current = display
+                    if (current == null) {
+                        display = projection.createVirtualDisplay(
+                            "Nectarlink", size.width, size.height, size.dpi,
+                            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, active.surface, null, null,
+                        )
+                    } else {
+                        current.resize(size.width, size.height, size.dpi)
+                        current.surface = active.surface
+                    }
+                    val closed = stream.send(
+                        VideoPacketKind.CONFIG,
+                        0u,
+                        mirrorConfigCodec(active.name, size.width.toUInt(), size.height.toUInt(), 0u),
+                    ) == MirrorSendResult.CLOSED || drain(active.codec)
+                    if (closed) break
+                } finally {
+                    runCatching { display?.surface = null }
+                    runCatching { active.codec.stop() }
+                    runCatching { active.codec.release() }
+                    active.surface.release()
                 }
-                val closed = stream.send(
-                    VideoPacketKind.CONFIG,
-                    0u,
-                    mirrorConfigCodec(activeCodecName, size.width.toUInt(), size.height.toUInt(), 0u),
-                ) == MirrorSendResult.CLOSED || drain(codec)
-                runCatching { codec.stop() }
-                codec.release()
-                surface.release()
-                if (closed) break
             }
         } catch (e: Exception) {
             Log.w(TAG, "screen sharing failed", e)
@@ -157,7 +162,8 @@ internal class ScreenEncoder(
         return !running
     }
 
-    private fun createCodecForMime(mime: String, size: Size): MediaCodec {
+    private fun createEncoder(name: String, size: Size): Encoder {
+        val mime = mimeForCodec(name)
         val format = MediaFormat.createVideoFormat(mime, size.width, size.height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
@@ -176,16 +182,28 @@ internal class ScreenEncoder(
             setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
         }
         val codec = MediaCodec.createEncoderByType(mime)
-        codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        return codec
+        var surface: Surface? = null
+        try {
+            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            surface = codec.createInputSurface()
+            codec.start()
+            return Encoder(name, codec, surface)
+        } catch (error: Exception) {
+            runCatching { surface?.release() }
+            runCatching { codec.release() }
+            throw error
+        }
     }
 
-    private fun encoder(size: Size): Pair<String, MediaCodec> {
-        val preferredMime = mimeForCodec(codecName)
-        if (preferredMime != MediaFormat.MIMETYPE_VIDEO_AVC) {
-            runCatching { return codecName to createCodecForMime(preferredMime, size) }
+    private fun encoder(size: Size): Encoder {
+        if (codecName != "h264") {
+            try {
+                return createEncoder(codecName, size)
+            } catch (error: Exception) {
+                Log.i(TAG, "$codecName screen encoder unavailable; using H.264", error)
+            }
         }
-        return "h264" to createCodecForMime(MediaFormat.MIMETYPE_VIDEO_AVC, size)
+        return createEncoder("h264", size)
     }
 
     /** The screen's size scaled to fit `maxSize`, in multiples of 16 (what encoders like). */
@@ -197,6 +215,17 @@ internal class ScreenEncoder(
     companion object {
         private const val TAG = "ScreenEncoder"
         private const val WAIT_US = 50_000L
+        private val hevcDecoderSupported by lazy(LazyThreadSafetyMode.PUBLICATION) {
+            runCatching {
+                android.media.MediaCodecList(android.media.MediaCodecList.REGULAR_CODECS)
+                    .codecInfos
+                    .any { info ->
+                        !info.isEncoder && info.supportedTypes.any {
+                            it.equals(MediaFormat.MIMETYPE_VIDEO_HEVC, ignoreCase = true)
+                        }
+                    }
+            }.getOrDefault(false)
+        }
 
         fun mimeForCodec(name: String): String = when (name.lowercase()) {
             "h265", "hevc" -> MediaFormat.MIMETYPE_VIDEO_HEVC
@@ -217,6 +246,8 @@ internal class ScreenEncoder(
             }.getOrDefault(false)
             return if (supported) want else "h264"
         }
+
+        fun supportsHevcDecoder(): Boolean = hevcDecoderSupported
 
         fun computeScreenSize(context: Context, maxSize: Int): Triple<Int, Int, Int> {
             val windows = context.getSystemService(WindowManager::class.java)

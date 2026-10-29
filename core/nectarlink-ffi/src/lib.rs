@@ -4063,6 +4063,11 @@ impl NectarlinkNode {
         Ok(self.node.webcam_codecs(parse_id(&pc_id)?)?)
     }
 
+    /// Screen codecs accepted by the connected receiver, with H.264 fallback.
+    pub fn mirror_codecs(&self, pc_id: String) -> Result<Vec<String>> {
+        Ok(self.node.mirror_codecs(parse_id(&pc_id)?)?)
+    }
+
     /// Opens this phone's camera stream to a paired PC (`docs/protocol/webcam.md`).
     pub async fn webcam_open(&self, pc_id: String) -> Result<Arc<MirrorStream>> {
         let id = parse_id(&pc_id)?;

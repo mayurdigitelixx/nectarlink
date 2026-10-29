@@ -10,13 +10,19 @@ use windows::{
     Win32::{
         Foundation::E_FAIL,
         Graphics::{
-            Direct3D::D3D_DRIVER_TYPE_HARDWARE,
+            Direct3D::D3D_DRIVER_TYPE_UNKNOWN,
             Direct3D11::{
-                D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_MAP_READ,
-                D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
-                D3D11CreateDevice, ID3D11Device, ID3D11Multithread, ID3D11Texture2D,
+                D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+                D3D11_DECODER_PROFILE_AV1_VLD_PROFILE0, D3D11_DECODER_PROFILE_H264_VLD_NOFGT,
+                D3D11_DECODER_PROFILE_HEVC_VLD_MAIN, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
+                D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING, D3D11CreateDevice,
+                ID3D11Device, ID3D11Multithread, ID3D11Texture2D, ID3D11VideoDevice,
             },
-            Dxgi::Common::DXGI_SAMPLE_DESC,
+            Dxgi::{
+                Common::{DXGI_FORMAT_NV12, DXGI_SAMPLE_DESC},
+                CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_ERROR_NOT_FOUND, IDXGIAdapter1,
+                IDXGIFactory1,
+            },
         },
         Media::MediaFoundation::{
             CLSID_MSH264DecoderMFT, CODECAPI_AVDecNumWorkerThreads, IMF2DBuffer, IMFActivate, IMFDXGIBuffer,
@@ -151,14 +157,53 @@ pub(crate) fn create_mft(
     }
 }
 
-/// A Direct3D 11 device on the default GPU, shared with Media Foundation.
-fn gpu_device_manager() -> windows::core::Result<IMFDXGIDeviceManager> {
+pub(crate) struct VideoAdapter {
+    pub luid: u64,
+    pub adapter: IDXGIAdapter1,
+}
+
+struct GpuDevice {
+    adapter_luid: u64,
+    manager: IMFDXGIDeviceManager,
+}
+
+pub(crate) fn video_adapters() -> windows::core::Result<Vec<VideoAdapter>> {
+    // SAFETY: enumeration returns owned COM interfaces; no raw pointers escape.
+    unsafe {
+        let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
+        let mut adapters = Vec::new();
+        for index in 0.. {
+            let adapter = match factory.EnumAdapters1(index) {
+                Ok(adapter) => adapter,
+                Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => break,
+                Err(error) => return Err(error),
+            };
+            let desc = match adapter.GetDesc1() {
+                Ok(desc) => desc,
+                Err(error) => {
+                    tracing::debug!(%error, index, "Video adapter description unavailable");
+                    continue;
+                }
+            };
+            if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 {
+                continue;
+            }
+            adapters.push(VideoAdapter {
+                luid: u64::from(desc.AdapterLuid.LowPart) | ((desc.AdapterLuid.HighPart as u64) << 32),
+                adapter,
+            });
+        }
+        Ok(adapters)
+    }
+}
+
+fn gpu_device_manager(adapter: &VideoAdapter, codec: &str) -> windows::core::Result<IMFDXGIDeviceManager> {
     // SAFETY: plain Direct3D and Media Foundation calls with owned values.
     unsafe {
         let mut device: Option<ID3D11Device> = None;
         D3D11CreateDevice(
-            None,
-            D3D_DRIVER_TYPE_HARDWARE,
+            &adapter.adapter,
+            D3D_DRIVER_TYPE_UNKNOWN,
             Default::default(),
             D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
             None,
@@ -168,6 +213,15 @@ fn gpu_device_manager() -> windows::core::Result<IMFDXGIDeviceManager> {
             None,
         )?;
         let device = device.ok_or_else(|| windows::core::Error::from(E_FAIL))?;
+        let video: ID3D11VideoDevice = device.cast()?;
+        let profile = match codec {
+            "h265" => D3D11_DECODER_PROFILE_HEVC_VLD_MAIN,
+            "av1" => D3D11_DECODER_PROFILE_AV1_VLD_PROFILE0,
+            _ => D3D11_DECODER_PROFILE_H264_VLD_NOFGT,
+        };
+        if !video.CheckVideoDecoderFormat(&profile, DXGI_FORMAT_NV12)?.as_bool() {
+            return Err(windows::core::Error::from(E_FAIL));
+        }
         // The decoder uses the device from its own threads.
         if let Ok(multithread) = device.cast::<ID3D11Multithread>() {
             let _ = multithread.SetMultithreadProtected(true);
@@ -194,7 +248,8 @@ pub struct Decoder {
     codec: String,
     transform: IMFTransform,
     /// The GPU the decoder uses, kept alive with it; `None` when it decodes in software.
-    gpu: Option<IMFDXGIDeviceManager>,
+    gpu: Option<GpuDevice>,
+    failed_adapters: Vec<u64>,
     /// Where GPU pictures are copied to be read, reused while the size stays.
     staging: Option<(ID3D11Texture2D, D3D11_TEXTURE2D_DESC)>,
     /// The decoded size, as the output type says (padded).
@@ -227,15 +282,12 @@ impl Decoder {
     /// A low-latency software decoder for `"h264"`, `"h265"`, or `"av1"`, for
     /// the calling thread (which it stays on).
     pub fn new_for_codec(codec: &str) -> windows::core::Result<Decoder> {
-        Self::create(codec, false)
+        Self::create_with_manager(codec, None)
     }
 
-    /// As [`Decoder::new_for_codec`], decoding on the GPU when the PC can
-    /// (4K H.264 takes about 60 ms a frame in software, far over a 30 fps
-    /// frame's 33 ms). Falls back to software when it can't, here or later
-    /// in the stream (see [`Decoder::decode`]).
+    /// Tries hardware adapters in DXGI order, then falls back to software.
     pub fn new_gpu(codec: &str) -> windows::core::Result<Decoder> {
-        Self::create(codec, true).or_else(|e| {
+        Self::create_hardware(codec, &[]).or_else(|e| {
             tracing::info!(error = %e, "no GPU video decoding; decoding in software");
             Self::new_for_codec(codec)
         })
@@ -246,7 +298,45 @@ impl Decoder {
         self.gpu.is_some()
     }
 
-    fn create(codec: &str, gpu: bool) -> windows::core::Result<Decoder> {
+    fn create_hardware(codec: &str, excluded: &[u64]) -> windows::core::Result<Decoder> {
+        ensure_mf_started()?;
+        let mut last_error = windows::core::Error::from(E_FAIL);
+        for adapter in video_adapters()? {
+            if excluded.contains(&adapter.luid) {
+                continue;
+            }
+            let result = gpu_device_manager(&adapter, codec).and_then(|manager| {
+                Self::create_with_manager(codec, Some(GpuDevice { adapter_luid: adapter.luid, manager }))
+            });
+            match result {
+                Ok(mut decoder) => {
+                    decoder.failed_adapters = excluded.to_vec();
+                    tracing::info!(codec, adapter = adapter.luid, "GPU video decoder initialized");
+                    return Ok(decoder);
+                }
+                Err(error) => {
+                    tracing::debug!(%error, codec, adapter = adapter.luid, "GPU decoder unavailable on adapter");
+                    last_error = error;
+                }
+            }
+        }
+        Err(last_error)
+    }
+
+    fn recover_gpu(&mut self) {
+        let Some(gpu) = &self.gpu else { return };
+        let mut excluded = self.failed_adapters.clone();
+        excluded.push(gpu.adapter_luid);
+        let replacement = Self::create_hardware(&self.codec, &excluded).or_else(|_| {
+            tracing::info!(codec = self.codec, "GPU adapters exhausted; decoding in software");
+            Self::new_for_codec(&self.codec)
+        });
+        if let Ok(decoder) = replacement {
+            *self = decoder;
+        }
+    }
+
+    fn create_with_manager(codec: &str, gpu: Option<GpuDevice>) -> windows::core::Result<Decoder> {
         // SAFETY: plain COM and Media Foundation calls with owned values.
         unsafe {
             ensure_mf_started()?;
@@ -264,26 +354,22 @@ impl Decoder {
                     CoCreateInstance(&CLSID_MSH264DecoderMFT, None, CLSCTX_INPROC_SERVER)?,
                 ),
             };
-            // One picture in, one out: no reordering delay, single worker thread.
+            // Avoid decoder worker-thread and buffering overhead for low-latency streams.
             let attributes = transform.GetAttributes().ok();
             if let Some(attributes) = &attributes {
                 let _ = attributes.SetUINT32(&MF_LOW_LATENCY, 1);
                 let _ = attributes.SetUINT32(&CODECAPI_AVDecNumWorkerThreads, 1);
             }
-            // The GPU, before any media type is set.
-            let gpu = if gpu {
+            // Media Foundation needs the D3D manager before media types are set.
+            if let Some(gpu) = &gpu {
                 let aware = attributes
                     .as_ref()
                     .is_some_and(|a| a.GetUINT32(&MF_SA_D3D11_AWARE).is_ok_and(|v| v != 0));
                 if !aware {
                     return Err(windows::core::Error::from(E_FAIL));
                 }
-                let manager = gpu_device_manager()?;
-                transform.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, manager.as_raw() as usize)?;
-                Some(manager)
-            } else {
-                None
-            };
+                transform.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, gpu.manager.as_raw() as usize)?;
+            }
             let input = MFCreateMediaType()?;
             input.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
             input.SetGUID(&MF_MT_SUBTYPE, &subtype)?;
@@ -298,6 +384,7 @@ impl Decoder {
                 codec: codec.to_owned(),
                 transform,
                 gpu,
+                failed_adapters: Vec::new(),
                 staging: None,
                 coded: (0, 0),
                 provides_samples: false,
@@ -347,9 +434,8 @@ impl Decoder {
     }
 
     /// Decodes one access unit (Annex B); returns the pictures it completed.
-    /// If decoding on the GPU fails, the decoder switches to software for the
-    /// rest of the stream and returns the error: the caller starts over from
-    /// the next keyframe, as after any decoding error.
+    /// On a GPU failure, tries another adapter before software. The error is
+    /// returned so the caller can request a keyframe for the replacement decoder.
     pub fn decode(&mut self, data: &[u8], time_us: u64) -> windows::core::Result<Vec<Picture>> {
         let frames = self.decode_frames(data, time_us)?;
         frames.iter().map(|frame| self.read_frame(frame)).collect()
@@ -359,12 +445,8 @@ impl Decoder {
     /// decoded even when the caller discards their output to catch up.
     pub fn decode_frames(&mut self, data: &[u8], time_us: u64) -> windows::core::Result<Vec<DecodedFrame>> {
         let result = self.decode_on(data, time_us);
-        if result.is_err()
-            && self.gpu.is_some()
-            && let Ok(software) = Self::create(&self.codec, false)
-        {
-            tracing::info!("GPU video decoding failed; decoding in software");
-            *self = software;
+        if result.is_err() && self.gpu.is_some() {
+            self.recover_gpu();
         }
         result
     }
@@ -457,12 +539,8 @@ impl Decoder {
 
     pub fn read_frame(&mut self, frame: &DecodedFrame) -> windows::core::Result<Picture> {
         let result = self.picture(frame);
-        if result.is_err()
-            && self.gpu.is_some()
-            && let Ok(software) = Self::create(&self.codec, false)
-        {
-            tracing::info!("GPU video readback failed; decoding in software");
-            *self = software;
+        if result.is_err() && self.gpu.is_some() {
+            self.recover_gpu();
         }
         result
     }
@@ -656,6 +734,22 @@ fn clamp(v: i32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gpu_recovery_excludes_the_failed_adapter_and_resumes_at_a_keyframe() {
+        let Ok(mut decoder) = Decoder::create_hardware("h264", &[]) else { return };
+        let failed = decoder.gpu.as_ref().unwrap().adapter_luid;
+        decoder.recover_gpu();
+        if let Some(gpu) = &decoder.gpu {
+            assert_ne!(gpu.adapter_luid, failed);
+            assert!(decoder.failed_adapters.contains(&failed));
+        }
+        let mut pictures = 0;
+        for (i, unit) in test_stream("h264").iter().enumerate() {
+            pictures += decoder.decode(unit, i as u64 * 33_333).unwrap().len();
+        }
+        assert_eq!(pictures, 10);
+    }
 
     #[test]
     fn gpu_frames_can_be_discarded_without_readback_then_materialized() {

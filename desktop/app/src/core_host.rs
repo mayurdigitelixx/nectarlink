@@ -129,6 +129,7 @@ pub fn compute_capabilities(
             caps.push(nectarlink_core::WEBCAM_VIRTUAL.into());
             if crate::webcam::supports_hevc() {
                 caps.push(nectarlink_core::WEBCAM_HEVC.into());
+                caps.push(nectarlink_core::MIRROR_HEVC.into());
             }
             caps.push(nectarlink_core::MEDIA_STREAM.into());
         }
