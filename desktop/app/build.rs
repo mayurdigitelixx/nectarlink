@@ -352,6 +352,10 @@ fn compile_translations() {
 }
 
 fn main() {
+    println!("cargo::rustc-check-cfg=cfg(linux_ffmpeg_video)");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        build_linux_video_codec();
+    }
     println!("cargo:rerun-if-changed=src/mark.rs");
     for qml in QML.iter().chain(QML_SINGLETONS.iter()) {
         println!("cargo:rerun-if-changed={qml}");
@@ -427,4 +431,27 @@ fn main() {
     println!("cargo:rerun-if-changed=cpp/native_window.cpp");
     println!("cargo:rerun-if-changed=cpp/video_view.h");
     println!("cargo:rerun-if-changed=cpp/video_view.cpp");
+}
+
+fn build_linux_video_codec() {
+    println!("cargo::rerun-if-changed=cpp/linux_video_codec.h");
+    println!("cargo::rerun-if-changed=cpp/linux_video_codec.cpp");
+    println!("cargo::rerun-if-changed=cpp/linux_video_builtin.h");
+    println!("cargo::rerun-if-changed=cpp/linux_video_dispatch.cpp");
+    let libraries =
+        ["libavcodec", "libavutil"].map(|name| pkg_config::Config::new().cargo_metadata(false).probe(name));
+    let [Ok(codec), Ok(util)] = libraries else { return };
+    let mut build = cc::Build::new();
+    build.cpp(true).std("c++17").define("NECTARLINK_BUILTIN_VIDEO", None).file("cpp/linux_video_codec.cpp");
+    for path in codec.include_paths.iter().chain(&util.include_paths) {
+        build.include(path);
+    }
+    cc::Build::new()
+        .cpp(true)
+        .std("c++17")
+        .file("cpp/linux_video_dispatch.cpp")
+        .compile("nectarlink_linux_video_dispatch");
+    build.compile("nectarlink_linux_video_codec");
+    println!("cargo::rustc-link-lib=dl");
+    println!("cargo::rustc-cfg=linux_ffmpeg_video");
 }

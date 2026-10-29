@@ -1320,6 +1320,8 @@ pub mod mirror {
     pub const H264: &str = "h264";
     pub const H265: &str = "h265";
     pub const AV1: &str = "av1";
+    /// Offered by a device that can decode HEVC video streams.
+    pub const HEVC: &str = "mirror.decode.hevc";
     /// Offered by phones that stream all their sound while mirrored.
     pub const AUDIO: &str = "mirror.audio";
     /// Offered by phones that stream the sound of apps that allow it.
@@ -1576,7 +1578,7 @@ impl MirrorInput {
 /// The format of a mirroring stream (a config packet's data, in CBOR).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MirrorConfig {
-    /// `h264`.
+    /// `h264`, `h265`, or `av1`.
     pub codec: String,
     pub width: u32,
     pub height: u32,

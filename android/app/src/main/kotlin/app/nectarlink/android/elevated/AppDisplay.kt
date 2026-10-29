@@ -18,10 +18,10 @@ import java.io.OutputStream
 /**
  * An app in a window of its own (Elevated): a virtual display of its own,
  * made by the shell-side helper (apps may not put other apps on their
- * displays), with an H.264 encoder drawing from it, and the app started on
- * it. The encoded video goes to [out] as packets:
- * `u32 length | u8 kind | u64 time µs | data` (kind 0: config, as
- * `u32 width | u32 height | u32 display id`; 1: frame; 2: keyframe).
+ * displays). A surface encoder captures that display, and the app starts on it.
+ * Packets written to [out] use `u32 length | u8 kind | u64 time_us | data`.
+ * Kind 0 carries four u32 fields: width, height, display ID, and codec ID
+ * (1: H.264, 2: H.265, 3: AV1). Kinds 1 and 2 carry frames and keyframes.
  */
 @SuppressLint("PrivateApi", "DiscouragedPrivateApi", "BlockedPrivateApi")
 class AppDisplay(
@@ -32,6 +32,12 @@ class AppDisplay(
     private val fps: Int,
     private val codecName: String = "h264",
 ) {
+    private data class EncodedSurface(
+        val codecName: String,
+        val codec: MediaCodec,
+        val surface: Surface,
+    )
+
     @Volatile private var running = true
     @Volatile private var nextSize: Triple<Int, Int, Int>? = null
     private var display: VirtualDisplay? = null
@@ -50,25 +56,21 @@ class AppDisplay(
         var surface: Surface? = null
         val data = DataOutputStream(out.buffered(1 shl 16))
         try {
-            val (firstCodec, firstSurface) = createEncoder(curW, curH)
-            codec = firstCodec
-            surface = firstSurface
+            val first = createEncoder(curW, curH)
+            codec = first.codec
+            surface = first.surface
             val made = if (fullScreen) {
-                createMirrorDisplay(curW, curH, curDpi, firstSurface)
+                createMirrorDisplay(curW, curH, curDpi, first.surface)
             } else {
-                createDisplay(curW, curH, curDpi, firstSurface)
+                createDisplay(curW, curH, curDpi, first.surface)
             }
             display = made
             displayId = if (fullScreen) 0 else made.display.displayId
             if (!fullScreen) {
                 hideIme(displayId)
             }
-            firstCodec.start()
-            codecForKeyframes = firstCodec
-            write(data, KIND_CONFIG, 0, ByteArray(12).also {
-                java.nio.ByteBuffer.wrap(it).putInt(curW).putInt(curH).putInt(displayId)
-            })
-            data.flush()
+            codecForKeyframes = first.codec
+            writeConfig(data, curW, curH, displayId, first.codecName)
             if (!fullScreen) {
                 launch(pkg, displayId)
                 watchActivities(displayId)
@@ -87,20 +89,16 @@ class AppDisplay(
                 codec = null
                 runCatching { surface?.release() }
                 surface = null
-                val (nextCodec, nextSurface) = createEncoder(newW, newH)
-                codec = nextCodec
-                surface = nextSurface
-                nextCodec.start()
-                codecForKeyframes = nextCodec
+                val next = createEncoder(newW, newH)
+                codec = next.codec
+                surface = next.surface
+                codecForKeyframes = next.codec
                 made.resize(newW, newH, newDpi)
-                made.surface = nextSurface
+                made.surface = next.surface
                 curW = newW
                 curH = newH
                 curDpi = newDpi
-                write(data, KIND_CONFIG, 0, ByteArray(12).also {
-                    java.nio.ByteBuffer.wrap(it).putInt(curW).putInt(curH).putInt(displayId)
-                })
-                data.flush()
+                writeConfig(data, curW, curH, displayId, next.codecName)
             }
         } finally {
             running = false
@@ -137,7 +135,8 @@ class AppDisplay(
         else -> MediaFormat.MIMETYPE_VIDEO_AVC
     }
 
-    private fun createEncoderForMime(mime: String, w: Int, h: Int): Pair<MediaCodec, Surface> {
+    private fun createEncoderForCodec(name: String, w: Int, h: Int): EncodedSurface {
+        val mime = mimeForCodec(name)
         val format = MediaFormat.createVideoFormat(mime, w, h).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
@@ -157,16 +156,47 @@ class AppDisplay(
             }
         }
         val codec = MediaCodec.createEncoderByType(mime)
-        codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        return codec to codec.createInputSurface()
+        var surface: Surface? = null
+        try {
+            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            surface = codec.createInputSurface()
+            codec.start()
+            return EncodedSurface(name, codec, surface)
+        } catch (error: Exception) {
+            runCatching { surface?.release() }
+            runCatching { codec.release() }
+            throw error
+        }
     }
 
-    private fun createEncoder(w: Int, h: Int): Pair<MediaCodec, Surface> {
-        val preferredMime = mimeForCodec(codecName)
-        if (preferredMime != MediaFormat.MIMETYPE_VIDEO_AVC) {
-            runCatching { return createEncoderForMime(preferredMime, w, h) }
+    private fun createEncoder(w: Int, h: Int): EncodedSurface {
+        if (codecName != "h264") {
+            try {
+                return createEncoderForCodec(codecName, w, h)
+            } catch (error: Exception) {
+                android.util.Log.i("AppDisplay", "$codecName screen encoder unavailable; using H.264", error)
+            }
         }
-        return createEncoderForMime(MediaFormat.MIMETYPE_VIDEO_AVC, w, h)
+        return createEncoderForCodec("h264", w, h)
+    }
+
+    private fun writeConfig(
+        out: DataOutputStream,
+        width: Int,
+        height: Int,
+        displayId: Int,
+        codec: String,
+    ) {
+        val codecId = when (codec) {
+            "h264" -> CODEC_ID_H264
+            "h265" -> CODEC_ID_H265
+            "av1" -> CODEC_ID_AV1
+            else -> error("Unsupported screen codec: $codec")
+        }
+        write(out, KIND_CONFIG, 0, ByteArray(16).also {
+            java.nio.ByteBuffer.wrap(it).putInt(width).putInt(height).putInt(displayId).putInt(codecId)
+        })
+        out.flush()
     }
 
     private fun drain(codec: MediaCodec, out: DataOutputStream) {
@@ -382,6 +412,9 @@ class AppDisplay(
         const val KIND_CONFIG = 0
         const val KIND_FRAME = 1
         const val KIND_KEYFRAME = 2
+        const val CODEC_ID_H264 = 1
+        const val CODEC_ID_H265 = 2
+        const val CODEC_ID_AV1 = 3
 
         /** How often an open window counts as activity; well under any screen timeout. */
         private const val KEEP_ACTIVE_MS = 4_000L

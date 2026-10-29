@@ -52,6 +52,9 @@ mkdir -p \
     "${APPDIR}/usr/share/icons/hicolor/scalable/apps"
 
 install -m 0755 "${BIN_PATH}" "${APPDIR}/usr/bin/nectarlink-desktop"
+for adapter in "$(dirname "${BIN_PATH}")"/libnectarlink-video-ffmpeg*.so; do
+    [[ ! -f "${adapter}" ]] || install -m 0755 "${adapter}" "${APPDIR}/usr/bin/"
+done
 
 for qm in "$(dirname "${BIN_PATH}")"/nectarlink_*.qm; do
     if [[ -f "${qm}" ]]; then

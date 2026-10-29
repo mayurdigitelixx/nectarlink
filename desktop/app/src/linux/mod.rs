@@ -33,6 +33,10 @@ pub mod storage;
 pub mod toast;
 pub mod tray;
 pub mod vcam;
+#[cfg(linux_ffmpeg_video)]
+pub(crate) mod video_decoder;
+#[cfg(linux_ffmpeg_video)]
+pub(crate) mod video_encoder;
 pub mod vmic;
 pub mod wallpaper;
 pub mod widget;

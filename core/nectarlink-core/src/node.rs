@@ -2668,6 +2668,19 @@ impl Node {
         Ok(codecs)
     }
 
+    /// Screen codecs accepted by the connected receiver, in preference order.
+    /// Older receivers do not advertise HEVC and continue to use H.264.
+    pub fn mirror_codecs(&self, peer: DeviceId) -> Result<Vec<String>> {
+        let _ = self.connected(&peer)?;
+        let record = self.shared.store.get_peer(&peer)?.ok_or(Error::NotPaired)?;
+        let mut codecs = Vec::new();
+        if record.caps.contains(crate::MIRROR_HEVC) {
+            codecs.push(crate::MIRROR_H265.into());
+        }
+        codecs.push(crate::MIRROR_H264.into());
+        Ok(codecs)
+    }
+
     /// Asks a paired phone to start streaming its camera as a webcam.
     /// Video then arrives through [`Platform::webcam_sink`](crate::Platform::webcam_sink).
     pub async fn webcam_start(&self, peer: DeviceId, options: crate::WebcamStart) -> Result<()> {

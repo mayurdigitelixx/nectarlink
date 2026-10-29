@@ -22,6 +22,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
 import app.nectarlink.android.NectarlinkApplication
 import app.nectarlink.android.R
+import app.nectarlink.android.elevated.AppDisplay
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -133,13 +134,14 @@ class MirrorService : Service() {
                 main.post { stopSharing() }
                 return@launch
             }
+            val preferredCodec = core.mirrorCodecs(pc).firstOrNull() ?: "h264"
             main.post {
                 val running = projection
                 if (running == null) {
                     stream.end()
                     return@post
                 }
-                encoder = ScreenEncoder(this@MirrorService, running, stream, maxSize, fps, bitrate) {
+                encoder = ScreenEncoder(this@MirrorService, running, stream, maxSize, fps, bitrate, preferredCodec) {
                     main.post { stopSharing() }
                 }.also { it.start() }
                 applyPower()
@@ -158,7 +160,8 @@ class MirrorService : Service() {
         // The helper's socket: off the main thread, where Android refuses
         // network calls (and the phone then asked for screen-capture consent).
         val (initW, initH, initDpi) = ScreenEncoder.computeScreenSize(this@MirrorService, request.maxSize)
-        val codec = ScreenEncoder.selectCodec("h264")
+        val preferredCodec = core.mirrorCodecs(pc).firstOrNull() ?: "h264"
+        val codec = ScreenEncoder.selectCodec(preferredCodec)
         val socket = app.nectarlink.android.elevated.Elevated.openScreen(
             initW,
             initH,
@@ -177,7 +180,7 @@ class MirrorService : Service() {
         }
         elevatedSocket = socket
         main.post { watchDisplay(socket, request, initW, initH) }
-        streamElevated(core, pc, pcName, request, socket, codec)
+        streamElevated(core, pc, pcName, request, socket)
     }
 
     /** Resizes the helper's picture when the phone's screen turns. */
@@ -221,7 +224,6 @@ class MirrorService : Service() {
         pcName: String,
         request: MirrorRequest,
         socket: java.net.Socket,
-        codec: String,
     ) {
         val stream = runCatching { core.mirrorOpen(pc) }.getOrElse {
             Log.w(TAG, "can't stream to the PC", it)
@@ -239,17 +241,25 @@ class MirrorService : Service() {
                 val time = input.readLong().toULong()
                 val data = ByteArray(length - 9).also { input.readFully(it) }
                 val result = when (kind) {
-                    app.nectarlink.android.elevated.AppDisplay.KIND_CONFIG -> {
-                        gotConfig = true
+                    AppDisplay.KIND_CONFIG -> {
+                        if (data.size != 16) throw java.io.IOException("Invalid screen configuration length")
                         val fields = java.nio.ByteBuffer.wrap(data)
                         val (w, h) = fields.int to fields.int
+                        fields.int // display id
+                        val activeCodec = when (fields.int) {
+                            AppDisplay.CODEC_ID_H264 -> "h264"
+                            AppDisplay.CODEC_ID_H265 -> "h265"
+                            AppDisplay.CODEC_ID_AV1 -> "av1"
+                            else -> throw java.io.IOException("Unsupported screen codec")
+                        }
+                        gotConfig = true
                         stream.send(
                             app.nectarlink.core.VideoPacketKind.CONFIG,
                             0u,
-                            app.nectarlink.core.mirrorConfigCodec(codec, w.toUInt(), h.toUInt(), 0u),
+                            app.nectarlink.core.mirrorConfigCodec(activeCodec, w.toUInt(), h.toUInt(), 0u),
                         )
                     }
-                    app.nectarlink.android.elevated.AppDisplay.KIND_KEYFRAME ->
+                    AppDisplay.KIND_KEYFRAME ->
                         stream.send(app.nectarlink.core.VideoPacketKind.KEYFRAME, time, data)
                     else ->
                         stream.send(app.nectarlink.core.VideoPacketKind.FRAME, time, data)

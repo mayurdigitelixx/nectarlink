@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Reverse Mirroring ("Your PC in Your Pocket"): captures the PC's primary
-//! display, encodes it to low-latency H.264 via Windows Media Foundation, and
-//! streams it over `mirror` / `video` (`session = 0`) to a paired phone, while
-//! injecting touch, scroll, key, and text input back into Windows (`docs/PLAN.md` §8.6).
+//! Shares the PC's display with a paired phone over `mirror` / `video` (session 0).
+//! Encodes H.264 or HEVC using Media Foundation on Windows and FFmpeg or OpenH264
+//! on Linux, and handles remote touch, keyboard, and pointer input.
 
 #[cfg(any(windows, target_os = "linux"))]
 mod imp {
@@ -23,7 +22,7 @@ mod imp {
     use nectarlink_core::{MirrorConfig, MirrorSend, PacketKind};
     #[cfg(windows)]
     use windows::Win32::{
-        Foundation::{POINT, RECT},
+        Foundation::{E_INVALIDARG, ERROR_TIMEOUT, POINT, RECT},
         Graphics::Gdi::{
             BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleBitmap, CreateCompatibleDC, DESKTOPHORZRES,
             DESKTOPVERTRES, DeleteDC, DeleteObject, GetDC, GetDIBits, GetDeviceCaps, HALFTONE, ReleaseDC,
@@ -31,17 +30,22 @@ mod imp {
         },
         Media::MediaFoundation::{
             CODECAPI_AVEncCommonMeanBitRate, CODECAPI_AVEncMPVGOPSize, CODECAPI_AVEncVideoForceKeyFrame,
-            CODECAPI_AVLowLatencyMode, ICodecAPI, IMFMediaBuffer, IMFMediaType, IMFSample, IMFTransform,
-            MF_E_NOTACCEPTING, MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE, MF_LOW_LATENCY,
-            MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE,
-            MF_MT_MPEG_SEQUENCE_HEADER, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MFCreateMediaType,
+            CODECAPI_AVLowLatencyMode, ICodecAPI, IMFActivate, IMFAttributes, IMFMediaBuffer,
+            IMFMediaEventGenerator, IMFMediaType, IMFSample, IMFTransform, MEError, METransformHaveOutput,
+            METransformNeedInput, MF_E_NO_EVENTS_AVAILABLE, MF_E_NOTACCEPTING, MF_E_OPERATION_CANCELLED,
+            MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE, MF_EVENT_FLAG_NO_WAIT,
+            MF_LOW_LATENCY, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
+            MF_MT_MAJOR_TYPE, MF_MT_MPEG_SEQUENCE_HEADER, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE,
+            MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK, MFCreateAttributes, MFCreateMediaType,
             MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video, MFSampleExtension_CleanPoint,
-            MFT_CATEGORY_VIDEO_ENCODER, MFT_MESSAGE_COMMAND_FLUSH, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
+            MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_ADAPTER_LUID, MFT_ENUM_FLAG_ASYNCMFT,
+            MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_LOCALMFT, MFT_ENUM_FLAG_SORTANDFILTER,
+            MFT_ENUM_FLAG_SYNCMFT, MFT_MESSAGE_COMMAND_FLUSH, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
             MFT_MESSAGE_NOTIFY_END_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_OUTPUT_DATA_BUFFER,
-            MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFVideoFormat_H264, MFVideoFormat_NV12,
-            MFVideoInterlace_Progressive,
+            MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO, MFTEnum2, MFVideoFormat_H264,
+            MFVideoFormat_HEVC, MFVideoFormat_NV12, MFVideoInterlace_Progressive,
         },
-        System::Variant::VARIANT,
+        System::{Com::CoTaskMemFree, Variant::VARIANT},
         UI::WindowsAndMessaging::{
             CURSOR_SHOWING, CURSORINFO, DI_NORMAL, DrawIconEx, GetCursorInfo, GetSystemMetrics, SM_CXSCREEN,
             SM_CYSCREEN,
@@ -49,7 +53,7 @@ mod imp {
     };
 
     #[cfg(windows)]
-    use crate::win::h264::{create_mft, ensure_mf_started};
+    use crate::win::h264::{ensure_mf_started, video_adapters};
     use crate::{core_host, win};
 
     struct ActiveSession {
@@ -94,8 +98,7 @@ mod imp {
 
     /// Whether this PC's display session supports screen capture for `mirror.capture`.
     ///
-    /// On Linux, `pc_mirror` captures the screen via X11 (`XGetImage`) or Wayland
-    /// (`org.freedesktop.portal.ScreenCast` + PipeWire) and encodes via `libopenh264`.
+    /// Linux needs an H.264 encoder and either X11 or the ScreenCast portal with PipeWire.
     pub fn is_capture_available() -> bool {
         #[cfg(windows)]
         {
@@ -103,7 +106,15 @@ mod imp {
         }
         #[cfg(target_os = "linux")]
         {
-            if openh264_enc_api().is_none() {
+            let can_encode = openh264_enc_api().is_some();
+            #[cfg(linux_ffmpeg_video)]
+            let can_encode = can_encode || {
+                static HARDWARE_AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                *HARDWARE_AVAILABLE.get_or_init(|| {
+                    crate::win::video_encoder::Encoder::new("h264", 320, 240, 30, 1_000_000).is_ok()
+                })
+            };
+            if !can_encode {
                 return false;
             }
             let has_x11 = std::env::var_os("DISPLAY").is_some() && x11_api().is_some();
@@ -337,8 +348,114 @@ mod imp {
     }
 
     #[cfg(windows)]
-    pub(crate) struct H264Encoder {
+    fn video_encoder_activations(
+        output_subtype: windows::core::GUID,
+        adapter: Option<u64>,
+    ) -> windows::core::Result<Vec<IMFActivate>> {
+        let input_info =
+            MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_NV12 };
+        let output_info =
+            MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: output_subtype };
+        let flags = if adapter.is_some() {
+            MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER
+        } else {
+            MFT_ENUM_FLAG_SYNCMFT
+                | MFT_ENUM_FLAG_ASYNCMFT
+                | MFT_ENUM_FLAG_LOCALMFT
+                | MFT_ENUM_FLAG_SORTANDFILTER
+        };
+        let mut activates: *mut Option<IMFActivate> = std::ptr::null_mut();
+        let mut count = 0u32;
+        // SAFETY: MFTEnum2 returns a CoTaskMemAlloc array; take each interface before freeing it.
+        unsafe {
+            let mut attributes: Option<IMFAttributes> = None;
+            if let Some(adapter) = adapter {
+                MFCreateAttributes(&mut attributes, 1)?;
+                attributes
+                    .as_ref()
+                    .ok_or_else(|| windows::core::Error::from(E_INVALIDARG))?
+                    .SetBlob(&MFT_ENUM_ADAPTER_LUID, &adapter.to_le_bytes())?;
+            }
+            MFTEnum2(
+                MFT_CATEGORY_VIDEO_ENCODER,
+                flags,
+                Some(&input_info),
+                Some(&output_info),
+                attributes.as_ref(),
+                &mut activates,
+                &mut count,
+            )?;
+            let mut candidates = Vec::new();
+            if !activates.is_null() {
+                let entries = std::slice::from_raw_parts_mut(activates, count as usize);
+                for entry in entries {
+                    if let Some(activation) = entry.take() {
+                        candidates.push(activation);
+                    }
+                }
+                CoTaskMemFree(Some(activates.cast()));
+            }
+            Ok(candidates)
+        }
+    }
+
+    #[cfg(windows)]
+    fn create_video_encoder(
+        subtype: windows::core::GUID,
+        configure: impl FnMut(IMFTransform) -> windows::core::Result<ScreenEncoder>,
+    ) -> windows::core::Result<ScreenEncoder> {
+        let mut candidates = Vec::new();
+        if let Ok(adapters) = video_adapters() {
+            for adapter in adapters {
+                match video_encoder_activations(subtype, Some(adapter.luid)) {
+                    Ok(found) => candidates.extend(found),
+                    Err(error) => {
+                        tracing::debug!(%error, adapter = adapter.luid, "GPU encoder enumeration failed")
+                    }
+                }
+            }
+        }
+        match video_encoder_activations(subtype, None) {
+            Ok(found) => candidates.extend(found),
+            Err(error) if candidates.is_empty() => return Err(error),
+            Err(error) => tracing::debug!(%error, "Software encoder enumeration failed"),
+        }
+        try_video_encoders(candidates, configure)
+    }
+
+    #[cfg(windows)]
+    fn try_video_encoders(
+        candidates: Vec<IMFActivate>,
+        mut configure: impl FnMut(IMFTransform) -> windows::core::Result<ScreenEncoder>,
+    ) -> windows::core::Result<ScreenEncoder> {
+        let mut last_error = windows::core::Error::from(E_INVALIDARG);
+        let mut candidates = candidates.into_iter();
+        while let Some(activation) = candidates.next() {
+            // SAFETY: each activation owns an encoder; fully configure it before selecting it.
+            let result = unsafe { activation.ActivateObject::<IMFTransform>() }.and_then(&mut configure);
+            match result {
+                Ok(mut encoder) => {
+                    encoder.alternatives = candidates.collect();
+                    return Ok(encoder);
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "Video encoder candidate unavailable");
+                    last_error = error;
+                    // SAFETY: this failed candidate will not be used again.
+                    let _ = unsafe { activation.ShutdownObject() };
+                }
+            }
+        }
+        Err(last_error)
+    }
+
+    #[cfg(windows)]
+    pub(crate) struct ScreenEncoder {
+        codec: String,
         transform: IMFTransform,
+        async_events: Option<IMFMediaEventGenerator>,
+        pending_input: u32,
+        pending_output: u32,
         /// The encoder's settings interface, when it has one: keyframes on demand and live
         /// bitrate changes without rebuilding the encoder.
         codec_api: Option<ICodecAPI>,
@@ -348,10 +465,11 @@ mod imp {
         output_size: u32,
         seq_header: Vec<u8>,
         sent_first_frame: bool,
+        alternatives: Vec<IMFActivate>,
     }
 
     #[cfg(windows)]
-    impl Drop for H264Encoder {
+    impl Drop for ScreenEncoder {
         fn drop(&mut self) {
             // SAFETY: flushes and ends streaming on the MFT before drop.
             unsafe {
@@ -362,24 +480,68 @@ mod imp {
     }
 
     #[cfg(windows)]
-    impl H264Encoder {
-        pub(crate) fn new(width: u32, height: u32, fps: u32, bitrate: u32) -> windows::core::Result<Self> {
+    impl ScreenEncoder {
+        pub(crate) fn new_for_codec(
+            codec: &str,
+            width: u32,
+            height: u32,
+            fps: u32,
+            bitrate: u32,
+        ) -> windows::core::Result<Self> {
             ensure_mf_started()?;
+            let subtype = match codec {
+                "h264" => MFVideoFormat_H264,
+                "h265" => MFVideoFormat_HEVC,
+                _ => return Err(windows::core::Error::from(E_INVALIDARG)),
+            };
+            create_video_encoder(subtype, |transform| {
+                Self::from_transform(codec, transform, width, height, fps, bitrate)
+            })
+        }
+
+        fn from_transform(
+            codec: &str,
+            transform: IMFTransform,
+            width: u32,
+            height: u32,
+            fps: u32,
+            bitrate: u32,
+        ) -> windows::core::Result<Self> {
             // SAFETY: Media Foundation COM calls with valid parameters.
             unsafe {
-                let transform =
-                    create_mft(MFT_CATEGORY_VIDEO_ENCODER, MFVideoFormat_NV12, MFVideoFormat_H264)?;
-                if let Ok(attrs) = transform.GetAttributes() {
+                let subtype = match codec {
+                    "h264" => MFVideoFormat_H264,
+                    "h265" => MFVideoFormat_HEVC,
+                    _ => return Err(windows::core::Error::from(E_INVALIDARG)),
+                };
+                let attributes = transform.GetAttributes().ok();
+                let is_async = attributes
+                    .as_ref()
+                    .is_some_and(|attrs| attrs.GetUINT32(&MF_TRANSFORM_ASYNC).is_ok_and(|value| value != 0));
+                if is_async {
+                    attributes
+                        .as_ref()
+                        .ok_or_else(|| windows::core::Error::from(E_INVALIDARG))?
+                        .SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)?;
+                }
+                if let Some(attrs) = attributes.as_ref() {
                     let _ = attrs.SetUINT32(&MF_LOW_LATENCY, 1);
                 }
 
                 let out_type: IMFMediaType = MFCreateMediaType()?;
                 out_type.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
-                out_type.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)?;
-                let _ = out_type.SetUINT32(
-                    &windows::Win32::Media::MediaFoundation::MF_MT_MPEG2_PROFILE,
-                    windows::Win32::Media::MediaFoundation::eAVEncH264VProfile_Base.0 as u32,
-                );
+                out_type.SetGUID(&MF_MT_SUBTYPE, &subtype)?;
+                if codec == "h264" {
+                    let _ = out_type.SetUINT32(
+                        &windows::Win32::Media::MediaFoundation::MF_MT_MPEG2_PROFILE,
+                        windows::Win32::Media::MediaFoundation::eAVEncH264VProfile_Base.0 as u32,
+                    );
+                } else {
+                    let _ = out_type.SetUINT32(
+                        &windows::Win32::Media::MediaFoundation::MF_MT_MPEG2_PROFILE,
+                        windows::Win32::Media::MediaFoundation::eAVEncH265VProfile_Main_420_8.0 as u32,
+                    );
+                }
                 out_type.SetUINT32(&MF_MT_AVG_BITRATE, bitrate.clamp(500_000, 20_000_000))?;
                 out_type.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
                 out_type.SetUINT64(&MF_MT_FRAME_SIZE, (u64::from(width) << 32) | u64::from(height))?;
@@ -411,19 +573,24 @@ mod imp {
                 let provides_samples = (info.dwFlags & (MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32)) != 0;
                 let output_size = info.cbSize.max(256 * 1024);
 
-                // A keyframe every two seconds keeps late joiners and lost packets recoverable
-                // without rebuilding the encoder, and low-latency mode stops it holding frames back.
+                // Periodic keyframes allow recovery after packet loss without restarting the encoder.
                 let codec_api: Option<ICodecAPI> = windows::core::Interface::cast(&transform).ok();
+                let async_events =
+                    if is_async { Some(windows::core::Interface::cast(&transform)?) } else { None };
                 if let Some(api) = codec_api.as_ref() {
                     let _ = api.SetValue(&CODECAPI_AVLowLatencyMode, &VARIANT::from(true));
                     let _ = api.SetValue(&CODECAPI_AVEncMPVGOPSize, &VARIANT::from(fps.max(1) * 2));
                 }
 
-                let _ = transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
-                let _ = transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
+                transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
+                transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
 
                 Ok(Self {
+                    codec: codec.to_owned(),
                     transform,
+                    async_events,
+                    pending_input: 0,
+                    pending_output: 0,
                     codec_api,
                     width,
                     height,
@@ -431,7 +598,21 @@ mod imp {
                     output_size,
                     seq_header,
                     sent_first_frame: false,
+                    alternatives: Vec::new(),
                 })
+            }
+        }
+
+        fn next_encoder(&mut self, codec: &str, width: u32, height: u32, fps: u32, bitrate: u32) -> bool {
+            let candidates = std::mem::take(&mut self.alternatives);
+            match try_video_encoders(candidates, |transform| {
+                Self::from_transform(codec, transform, width, height, fps, bitrate)
+            }) {
+                Ok(encoder) => {
+                    *self = encoder;
+                    true
+                }
+                Err(_) => false,
             }
         }
 
@@ -453,31 +634,84 @@ mod imp {
         }
 
         /// Feeds one NV12 frame (`width * height * 3 / 2` bytes) and drains encoded
-        /// Annex-B H.264 access units `(is_keyframe, bytes)`.
+        /// Annex-B H.264 or H.265 access units `(is_keyframe, bytes)`.
         pub(crate) fn encode(
             &mut self,
             nv12: &[u8],
             hns: i64,
             dur_hns: i64,
+            stop: &AtomicBool,
         ) -> windows::core::Result<Vec<(bool, Vec<u8>)>> {
             let expected = (self.width as usize) * (self.height as usize) * 3 / 2;
             if nv12.len() < expected {
                 return Ok(Vec::new());
             }
+            self.wait_for_async_event(METransformNeedInput.0 as u32, stop)?;
             // SAFETY: Media Foundation sample creation and MFT ProcessInput/ProcessOutput.
             unsafe {
                 let sample = make_sample(&nv12[..expected], hns, dur_hns)?;
                 let mut out = Vec::new();
                 match self.transform.ProcessInput(0, &sample, 0) {
-                    Ok(()) => self.drain(&mut out)?,
-                    Err(e) if e.code() == MF_E_NOTACCEPTING => {
+                    Ok(()) => {
+                        self.wait_for_async_event(METransformHaveOutput.0 as u32, stop)?;
                         self.drain(&mut out)?;
+                    }
+                    Err(e) if e.code() == MF_E_NOTACCEPTING => {
+                        self.wait_for_async_event(METransformHaveOutput.0 as u32, stop)?;
+                        self.drain(&mut out)?;
+                        self.wait_for_async_event(METransformNeedInput.0 as u32, stop)?;
                         self.transform.ProcessInput(0, &sample, 0)?;
+                        self.wait_for_async_event(METransformHaveOutput.0 as u32, stop)?;
                         self.drain(&mut out)?;
                     }
                     Err(e) => return Err(e),
                 }
                 Ok(out)
+            }
+        }
+
+        fn wait_for_async_event(&mut self, expected: u32, stop: &AtomicBool) -> windows::core::Result<()> {
+            let Some(events) = self.async_events.as_ref() else {
+                return Ok(());
+            };
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                if stop.load(Ordering::Relaxed) {
+                    return Err(windows::core::Error::from(MF_E_OPERATION_CANCELLED));
+                }
+                let pending = if expected == METransformNeedInput.0 as u32 {
+                    &mut self.pending_input
+                } else {
+                    &mut self.pending_output
+                };
+                if *pending > 0 {
+                    *pending -= 1;
+                    return Ok(());
+                }
+                if Instant::now() >= deadline {
+                    return Err(windows::core::Error::from(ERROR_TIMEOUT.to_hresult()));
+                }
+                // Poll so a stalled driver cannot prevent the capture thread from stopping.
+                // SAFETY: the active MFT owns this event queue; NO_WAIT never blocks.
+                let event = match unsafe { events.GetEvent(MF_EVENT_FLAG_NO_WAIT) } {
+                    Ok(event) => event,
+                    Err(error) if error.code() == MF_E_NO_EVENTS_AVAILABLE => {
+                        std::thread::sleep(Duration::from_millis(1));
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
+                // SAFETY: event properties are read before the event is released.
+                let kind = unsafe { event.GetType()? };
+                if kind == MEError.0 as u32 {
+                    // SAFETY: GetStatus returns the event's HRESULT.
+                    unsafe { event.GetStatus()?.ok()? };
+                }
+                if kind == METransformNeedInput.0 as u32 {
+                    self.pending_input += 1;
+                } else if kind == METransformHaveOutput.0 as u32 {
+                    self.pending_output += 1;
+                }
             }
         }
 
@@ -516,9 +750,18 @@ mod imp {
                                 let mut len = 0u32;
                                 buf.Lock(&mut ptr, None, Some(&mut len))?;
                                 let slice = std::slice::from_raw_parts(ptr, len as usize);
-                                let is_idr = !self.sent_first_frame || clean || has_h264_idr(slice);
+                                let is_idr = !self.sent_first_frame
+                                    || clean
+                                    || match self.codec.as_str() {
+                                        "h265" => has_h265_irap(slice),
+                                        _ => has_h264_idr(slice),
+                                    };
                                 let mut bytes = Vec::new();
-                                if is_idr && !has_h264_sps(slice) {
+                                let has_parameters = match self.codec.as_str() {
+                                    "h265" => has_h265_parameters(slice),
+                                    _ => has_h264_sps(slice),
+                                };
+                                if is_idr && !has_parameters {
                                     if self.seq_header.is_empty()
                                         && let Ok(cur_out) = self.transform.GetOutputCurrentType(0)
                                         && let Ok(hdr_len) = cur_out.GetBlobSize(&MF_MT_MPEG_SEQUENCE_HEADER)
@@ -542,6 +785,10 @@ mod imp {
                                     self.sent_first_frame = true;
                                     out.push((is_idr, bytes));
                                 }
+                            }
+                            // Each METransformHaveOutput event permits one ProcessOutput call.
+                            if self.async_events.is_some() {
+                                return Ok(());
                             }
                         }
                         Err(e) if e.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => return Ok(()),
@@ -591,6 +838,32 @@ mod imp {
     #[cfg(any(windows, target_os = "linux"))]
     fn has_h264_sps(data: &[u8]) -> bool {
         data.windows(4).any(|w| w[..3] == [0, 0, 1] && (w[3] & 0x1f) == 7)
+    }
+
+    #[cfg(any(windows, test))]
+    fn hevc_nal_types(data: &[u8]) -> impl Iterator<Item = u8> + '_ {
+        data.windows(4).filter_map(|w| (w[..3] == [0, 0, 1]).then_some((w[3] >> 1) & 0x3f))
+    }
+
+    #[cfg(any(windows, test))]
+    fn has_h265_irap(data: &[u8]) -> bool {
+        hevc_nal_types(data).any(|kind| (16..=21).contains(&kind))
+    }
+
+    #[cfg(any(windows, test))]
+    fn has_h265_parameters(data: &[u8]) -> bool {
+        let mut vps = false;
+        let mut sps = false;
+        let mut pps = false;
+        for kind in hevc_nal_types(data) {
+            match kind {
+                32 => vps = true,
+                33 => sps = true,
+                34 => pps = true,
+                _ => {}
+            }
+        }
+        vps && sps && pps
     }
 
     #[cfg(target_os = "linux")]
@@ -748,7 +1021,7 @@ mod imp {
     }
 
     #[cfg(target_os = "linux")]
-    pub(crate) struct H264Encoder {
+    pub(crate) struct OpenH264Encoder {
         encoder: *mut std::ffi::c_void,
         width: u32,
         height: u32,
@@ -758,7 +1031,7 @@ mod imp {
     }
 
     #[cfg(target_os = "linux")]
-    impl Drop for H264Encoder {
+    impl Drop for OpenH264Encoder {
         fn drop(&mut self) {
             if !self.encoder.is_null() {
                 unsafe {
@@ -775,7 +1048,7 @@ mod imp {
     }
 
     #[cfg(target_os = "linux")]
-    impl H264Encoder {
+    impl OpenH264Encoder {
         pub(crate) fn new(width: u32, height: u32, fps: u32, bitrate: u32) -> Result<Self, String> {
             let api = openh264_enc_api().ok_or_else(|| "libopenh264 encoder unavailable".to_owned())?;
             unsafe {
@@ -887,13 +1160,14 @@ mod imp {
             nv12: &[u8],
             hns: i64,
             _dur_hns: i64,
+            stop: &AtomicBool,
         ) -> Result<Vec<(bool, Vec<u8>)>, String> {
             let w = self.width as usize;
             let h = self.height as usize;
             let y_size = w * h;
             let uv_size = y_size / 2;
             let expected = y_size + uv_size;
-            if nv12.len() < expected || self.encoder.is_null() {
+            if stop.load(Ordering::Relaxed) || nv12.len() < expected || self.encoder.is_null() {
                 return Ok(Vec::new());
             }
 
@@ -1023,6 +1297,124 @@ mod imp {
                 self.sent_first_frame = true;
                 Ok(vec![(is_idr, bytes)])
             }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) enum ScreenEncoder {
+        OpenH264(OpenH264Encoder),
+        #[cfg(linux_ffmpeg_video)]
+        Hardware(crate::win::video_encoder::Encoder),
+    }
+
+    #[cfg(target_os = "linux")]
+    impl ScreenEncoder {
+        pub(crate) fn new_for_codec(
+            codec: &str,
+            width: u32,
+            height: u32,
+            fps: u32,
+            bitrate: u32,
+        ) -> Result<Self, String> {
+            #[cfg(linux_ffmpeg_video)]
+            match crate::win::video_encoder::Encoder::new(codec, width, height, fps, bitrate) {
+                Ok(encoder) => return Ok(Self::Hardware(encoder)),
+                Err(error) if codec != "h264" => return Err(error),
+                Err(error) => tracing::debug!(%error, "Hardware H.264 unavailable; using OpenH264"),
+            }
+            if codec != "h264" {
+                return Err(
+                    "HEVC hardware encoding requires FFmpeg development libraries at build time".into()
+                );
+            }
+            OpenH264Encoder::new(width, height, fps, bitrate).map(Self::OpenH264)
+        }
+
+        #[cfg(linux_ffmpeg_video)]
+        fn next_encoder(&mut self, codec: &str, width: u32, height: u32, fps: u32, bitrate: u32) -> bool {
+            if let Self::Hardware(encoder) = self {
+                if encoder.next_device() {
+                    return true;
+                }
+                if codec == "h264"
+                    && let Ok(software) = OpenH264Encoder::new(width, height, fps, bitrate)
+                {
+                    *self = Self::OpenH264(software);
+                    return true;
+                }
+            }
+            false
+        }
+
+        pub(crate) fn request_keyframe(&self) -> bool {
+            match self {
+                Self::OpenH264(encoder) => encoder.request_keyframe(),
+                #[cfg(linux_ffmpeg_video)]
+                Self::Hardware(encoder) => encoder.request_keyframe(),
+            }
+        }
+
+        pub(crate) fn set_bitrate(&self, bitrate: u32) -> bool {
+            match self {
+                Self::OpenH264(encoder) => encoder.set_bitrate(bitrate),
+                #[cfg(linux_ffmpeg_video)]
+                Self::Hardware(encoder) => encoder.set_bitrate(bitrate),
+            }
+        }
+
+        pub(crate) fn encode(
+            &mut self,
+            nv12: &[u8],
+            hns: i64,
+            dur_hns: i64,
+            stop: &AtomicBool,
+        ) -> Result<Vec<(bool, Vec<u8>)>, String> {
+            match self {
+                Self::OpenH264(encoder) => encoder.encode(nv12, hns, dur_hns, stop),
+                #[cfg(linux_ffmpeg_video)]
+                Self::Hardware(encoder) => encoder.encode(nv12, hns, stop),
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    fn new_pc_encoder(
+        codec: &str,
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate: u32,
+    ) -> Result<ScreenEncoder, String> {
+        ScreenEncoder::new_for_codec(codec, width, height, fps, bitrate).map_err(|error| error.to_string())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn new_pc_encoder(
+        codec: &str,
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate: u32,
+    ) -> Result<ScreenEncoder, String> {
+        ScreenEncoder::new_for_codec(codec, width, height, fps, bitrate)
+    }
+
+    #[cfg(any(windows, target_os = "linux"))]
+    fn new_pc_encoder_with_fallback(
+        codec: &mut String,
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate: u32,
+    ) -> Result<ScreenEncoder, String> {
+        match new_pc_encoder(codec, width, height, fps, bitrate) {
+            Ok(encoder) => Ok(encoder),
+            Err(error) if codec == "h265" => {
+                tracing::info!(%error, "HEVC screen encoder unavailable; using H.264");
+                *codec = "h264".into();
+                new_pc_encoder(codec, width, height, fps, bitrate)
+            }
+            Err(error) => Err(error),
         }
     }
 
@@ -1899,10 +2291,16 @@ mod imp {
         let frame_interval = Duration::from_micros(1_000_000 / u64::from(fps));
         let dur_hns = (10_000_000 / u64::from(fps)) as i64;
 
+        let mut codec = if node.mirror_codecs(peer).is_ok_and(|codecs| codecs.iter().any(|c| c == "h265")) {
+            "h265".to_owned()
+        } else {
+            "h264".to_owned()
+        };
+
         let mut bgra = Vec::new();
         let mut nv12 = Vec::new();
         let mut stream_dims: Option<(u32, u32)> = None;
-        let mut encoder: Option<H264Encoder> = None;
+        let mut encoder: Option<ScreenEncoder> = None;
         let started = Instant::now();
         let mut last_reinit = Instant::now() - Duration::from_secs(5);
         let mut last_drop: Option<Instant> = None;
@@ -1977,17 +2375,17 @@ mod imp {
             // stream config plus a full keyframe) is the fallback for encoders that can't.
             let requested_kf = force_keyframe.swap(false, Ordering::SeqCst);
             let keyframe_in_place =
-                requested_kf && encoder.as_ref().is_some_and(H264Encoder::request_keyframe);
+                requested_kf && encoder.as_ref().is_some_and(ScreenEncoder::request_keyframe);
             let need_reinit = encoder.is_none()
                 || (requested_kf
                     && !keyframe_in_place
                     && last_reinit.elapsed() >= Duration::from_millis(1400));
 
             if need_reinit {
-                match H264Encoder::new(dst_w, dst_h, fps, bitrate) {
+                match new_pc_encoder_with_fallback(&mut codec, dst_w, dst_h, fps, bitrate) {
                     Ok(enc) => {
                         let cfg = MirrorConfig {
-                            codec: nectarlink_core::MIRROR_H264.into(),
+                            codec: codec.clone(),
                             width: dst_w,
                             height: dst_h,
                             session: nectarlink_core::MIRROR_SCREEN,
@@ -2000,7 +2398,7 @@ mod imp {
                         stats.rebuilds += 1;
                     }
                     Err(e) => {
-                        tracing::warn!(error = %e, "PC mirror H.264 encoder init failed");
+                        tracing::warn!(error = %e, codec, "PC mirror encoder init failed");
                         break;
                     }
                 }
@@ -2017,7 +2415,7 @@ mod imp {
                 bgra_to_nv12(&bgra, dst_w as usize, dst_h as usize, &mut nv12);
                 let time_us = started.elapsed().as_micros() as u64;
                 let hns = (time_us * 10) as i64;
-                match enc.encode(&nv12, hns, dur_hns) {
+                match enc.encode(&nv12, hns, dur_hns, &stop) {
                     Ok(packets) => {
                         let mut send_failed = false;
                         for (is_keyframe, bytes) in packets {
@@ -2068,7 +2466,21 @@ mod imp {
                         }
                     }
                     Err(e) => {
-                        tracing::warn!(error = %e, "PC mirror frame encode error; rebuilding the encoder");
+                        if stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        #[cfg(any(windows, linux_ffmpeg_video))]
+                        if enc.next_encoder(&codec, dst_w, dst_h, fps, bitrate) {
+                            tracing::warn!(error = %e, codec, "Video encoding failed; trying another encoder");
+                            stats.rebuilds += 1;
+                            continue;
+                        }
+                        if codec == "h265" {
+                            tracing::warn!(error = %e, "HEVC screen encoding failed; using H.264");
+                            codec = "h264".into();
+                        } else {
+                            tracing::warn!(error = %e, "PC mirror frame encode error; rebuilding the encoder");
+                        }
                         encoder = None;
                     }
                 }
@@ -2168,6 +2580,44 @@ mod imp {
     mod tests {
         use super::*;
 
+        #[cfg(windows)]
+        #[test]
+        fn encoder_failures_advance_to_the_next_candidate() {
+            ensure_mf_started().unwrap();
+            let first = video_encoder_activations(MFVideoFormat_H264, None).unwrap().remove(0);
+            let second = video_encoder_activations(MFVideoFormat_H264, None).unwrap().remove(0);
+            let third = video_encoder_activations(MFVideoFormat_H264, None).unwrap().remove(0);
+            let mut attempts = 0;
+            let mut encoder = try_video_encoders(vec![first, second, third], |transform| {
+                attempts += 1;
+                if attempts == 1 {
+                    return Err(windows::core::Error::from(E_INVALIDARG));
+                }
+                ScreenEncoder::from_transform("h264", transform, 320, 240, 30, 2_000_000)
+            })
+            .unwrap();
+            assert_eq!(attempts, 2);
+            let input = vec![128; 320 * 240 * 3 / 2];
+            let stop = AtomicBool::new(false);
+            let mut packets = 0;
+            for i in 0..8 {
+                packets += encoder.encode(&input, i * 333_333, 333_333, &stop).unwrap().len();
+            }
+            assert!(packets > 0);
+            assert!(encoder.next_encoder("h264", 320, 240, 30, 2_000_000));
+            let mut keys = 0;
+            for i in 0..8 {
+                keys += encoder
+                    .encode(&input, i * 333_333, 333_333, &stop)
+                    .unwrap()
+                    .iter()
+                    .filter(|(keyframe, _)| *keyframe)
+                    .count();
+            }
+            assert!(keys > 0, "a replacement encoder starts with a keyframe");
+            assert!(!encoder.next_encoder("h264", 320, 240, 30, 2_000_000));
+        }
+
         #[cfg(target_os = "linux")]
         #[test]
         fn wayland_capture_reads_the_stream_through_the_portal_connection() {
@@ -2190,6 +2640,85 @@ mod imp {
             assert_eq!(nv12.len(), (w as usize) * (h as usize) * 3 / 2);
         }
 
+        #[test]
+        fn recognizes_hevc_random_access_frames_and_parameter_sets() {
+            let headers = [
+                0, 0, 0, 1, 0x40, 1, // VPS
+                0, 0, 1, 0x42, 1, // SPS
+                0, 0, 0, 1, 0x44, 1, // PPS
+            ];
+            let idr = [0, 0, 1, 0x26, 1]; // IDR_W_RADL, type 19
+            assert!(has_h265_parameters(&headers));
+            assert!(!has_h265_irap(&headers));
+            assert!(has_h265_irap(&idr));
+            assert!(!has_h265_parameters(&idr));
+        }
+
+        #[cfg(windows)]
+        #[test]
+        fn async_encoder_waits_time_out_and_honor_cancellation() {
+            let mut encoder = match ScreenEncoder::new_for_codec("h265", 1280, 720, 30, 2_000_000) {
+                Ok(encoder) if encoder.async_events.is_some() => encoder,
+                _ => {
+                    eprintln!("No asynchronous HEVC encoder available");
+                    return;
+                }
+            };
+            let stop = AtomicBool::new(false);
+            let cancelled = std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    std::thread::sleep(Duration::from_millis(50));
+                    stop.store(true, Ordering::Relaxed);
+                });
+                encoder.wait_for_async_event(METransformHaveOutput.0 as u32, &stop).unwrap_err()
+            });
+            assert_eq!(cancelled.code(), MF_E_OPERATION_CANCELLED);
+
+            stop.store(false, Ordering::Relaxed);
+            // No frame has been submitted, so an output event cannot arrive.
+            let timeout = encoder.wait_for_async_event(METransformHaveOutput.0 as u32, &stop).unwrap_err();
+            assert_eq!(timeout.code(), ERROR_TIMEOUT.to_hresult());
+        }
+
+        #[test]
+        fn hevc_encoder_round_trips_when_available() {
+            let (w, h) = target_dimensions(1280, 720, 1280);
+            let mut enc = match ScreenEncoder::new_for_codec("h265", w, h, 30, 2_000_000) {
+                Ok(encoder) => encoder,
+                Err(error) => {
+                    eprintln!("HEVC encoder unavailable: {error}");
+                    return;
+                }
+            };
+            let mut dec = match crate::win::h264::Decoder::new_for_codec("h265") {
+                Ok(decoder) => decoder,
+                Err(error) => {
+                    eprintln!("HEVC decoder unavailable: {error}");
+                    return;
+                }
+            };
+            let nv12 = vec![128u8; (w as usize) * (h as usize) * 3 / 2];
+            let mut produced_packets = 0usize;
+            let mut decoded_picture = false;
+            let stop = AtomicBool::new(false);
+            for i in 0..8 {
+                for (keyframe, data) in enc
+                    .encode(&nv12, i * 333_333, 333_333, &stop)
+                    .unwrap_or_else(|error| panic!("encode HEVC frame {i}: {error}"))
+                {
+                    produced_packets += 1;
+                    if keyframe {
+                        assert!(has_h265_irap(&data), "keyframes must contain an HEVC IRAP NAL");
+                        assert!(has_h265_parameters(&data), "keyframes must carry VPS, SPS and PPS");
+                    }
+                    decoded_picture |=
+                        !dec.decode(&data, i as u64 * 33_333).expect("decode packet").is_empty();
+                }
+            }
+            assert!(produced_packets > 0, "encoder must emit H.265 access units");
+            assert!(decoded_picture, "decoder must reconstruct an H.265 picture");
+        }
+
         #[cfg(any(windows, target_os = "linux"))]
         #[test]
         fn encodes_nv12_frames_and_decodes_back() {
@@ -2197,7 +2726,7 @@ mod imp {
             assert_eq!(w % 16, 0);
             assert_eq!(h % 16, 0);
 
-            let mut enc = H264Encoder::new(w, h, 30, 4_000_000).expect("H264Encoder");
+            let mut enc = new_pc_encoder("h264", w, h, 30, 4_000_000).expect("ScreenEncoder");
             let mut dec = crate::win::h264::Decoder::new_for_codec("h264").expect("H264 Decoder");
 
             let mut bgra = vec![0u8; (w as usize) * (h as usize) * 4];
@@ -2212,8 +2741,9 @@ mod imp {
 
             let mut decoded_any = false;
             let mut produced_packets = 0usize;
+            let stop = AtomicBool::new(false);
             for i in 0..8 {
-                let packets = enc.encode(&nv12, i * 333_333, 333_333).expect("encode frame");
+                let packets = enc.encode(&nv12, i * 333_333, 333_333, &stop).expect("encode frame");
                 for (_keyframe, data) in packets {
                     produced_packets += 1;
                     let pics = dec.decode(&data, (i as u64) * 33_333).expect("decode packet");
@@ -2225,7 +2755,7 @@ mod imp {
                 }
             }
             assert!(produced_packets > 0, "encoder must emit H.264 access units");
-            assert!(decoded_any, "decoder must reconstruct at least one frame from H264Encoder");
+            assert!(decoded_any, "decoder must reconstruct at least one frame from ScreenEncoder");
         }
 
         /// With a Chromium browser showing a video on a page whose title has
@@ -2260,13 +2790,18 @@ mod imp {
         #[test]
         fn keyframes_come_on_request_without_rebuilding_the_encoder() {
             let (w, h) = target_dimensions(1280, 720, 1280);
-            let mut enc = H264Encoder::new(w, h, 30, 2_000_000).expect("H264Encoder");
+            #[cfg(windows)]
+            let mut enc = new_pc_encoder("h264", w, h, 30, 2_000_000).expect("ScreenEncoder");
+            #[cfg(target_os = "linux")]
+            let mut enc =
+                ScreenEncoder::OpenH264(OpenH264Encoder::new(w, h, 30, 2_000_000).expect("OpenH264"));
             let mut nv12 = Vec::new();
             bgra_to_nv12(&vec![128u8; (w as usize) * (h as usize) * 4], w as usize, h as usize, &mut nv12);
+            let stop = AtomicBool::new(false);
 
-            let keyframes_after = |enc: &mut H264Encoder, start: i64, count: i64| {
+            let keyframes_after = |enc: &mut ScreenEncoder, start: i64, count: i64| {
                 (start..start + count)
-                    .flat_map(|i| enc.encode(&nv12, i * 333_333, 333_333).expect("encode frame"))
+                    .flat_map(|i| enc.encode(&nv12, i * 333_333, 333_333, &stop).expect("encode frame"))
                     .filter(|(keyframe, data)| *keyframe && has_h264_idr(data))
                     .count()
             };

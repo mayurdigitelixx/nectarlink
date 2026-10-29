@@ -2482,6 +2482,7 @@ version = "0.1.4"
 dependencies = [
  "anyhow",
  "blake3",
+ "cc",
  "cxx",
  "cxx-qt",
  "cxx-qt-build",
@@ -2494,6 +2495,7 @@ dependencies = [
  "material-colors",
  "nectarlink-core",
  "nectarlink-vcam",
+ "pkg-config",
  "qrcode",
  "serde",
  "serde_json",

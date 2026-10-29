@@ -4,7 +4,8 @@
 > allowed until v1. License: CC BY 4.0.
 
 A PC shows a phone's screen. The phone's user agrees each time (Android
-asks); the phone then streams its screen as H.264 on a stream of its own,
+asks); the phone then streams its screen as H.264 or, when both sides support
+it, H.265 on a stream of its own,
 and its sound, when the PC asks, on another (§5). The PC can also use the
 phone with its mouse and keyboard (§4), and open the phone's apps in
 windows of their own (§6).
@@ -15,6 +16,7 @@ windows of their own (§6).
 |---|---|---|
 | `mirror.capture` | phone | Shares its screen when its user agrees |
 | `mirror.view` | PC | Shows a phone's screen |
+| `mirror.decode.hevc` | PC or phone | Decodes H.265 screen-mirroring streams |
 | `mirror.input` | phone | Takes the PC's mouse and keyboard while mirrored (Assist: an accessibility service the user turns on; Elevated: injected input) |
 | `mirror.audio.playback` | phone | Shares the sound of apps that allow it while mirrored (Android 10+) |
 | `mirror.audio` | phone | Shares all its sound while mirrored (planned, Elevated) |
@@ -84,13 +86,32 @@ u64 time      // capture time in microseconds, big-endian (only differences mean
     data
 ```
 
-- **config**: the stream's format, CBOR `{ codec: "h264", width: uint,
+- **config**: the stream's format, CBOR `{ codec: "h264" | "h265", width: uint,
   height: uint }`. First, and again whenever it changes (the phone turned).
-- **frame**: one H.264 access unit (Annex B) that depends on earlier ones.
-- **keyframe**: an access unit that starts fresh (an IDR picture), with its
-  SPS and PPS before it.
+- **frame**: one H.264 or H.265 access unit (Annex B) that depends on earlier ones.
+- **keyframe**: an access unit that starts fresh (an IDR/IRAP picture), with
+  the codec's parameter sets before it (SPS/PPS for H.264; VPS/SPS/PPS for H.265).
 
 Packets are at most 8 MiB. Video is BT.709, limited range.
+
+The PC can also send its screen to the phone using the same packet format.
+It uses H.265 when the phone advertises `mirror.decode.hevc` and the PC's
+HEVC encoder starts successfully; otherwise it uses H.264. Windows uses Media
+Foundation. Linux tries FFmpeg's NVENC, VAAPI, and QSV hardware encoders for both
+codecs, retaining OpenH264 as the final H.264 fallback. Encoder failures advance
+to the next candidate. After the HEVC candidates are exhausted, the PC switches
+to H.264 and sends a new config packet.
+
+Linux advertises `mirror.decode.hevc` when its hardware HEVC decoder initializes.
+Decoded pictures are downloaded as NV12 for the existing Qt renderer.
+
+Hardware selection tries available adapters before falling back to software.
+Windows checks each adapter's decoder profile and configures screen encoders
+enumerated for that adapter's LUID. Linux tries each CUDA device or DRM render
+node with the available FFmpeg backends. If decoding fails, the receiver tries
+another hardware device and requests a keyframe before resuming. Screen mirroring
+and the webcam share this decoder selection; Windows webcam textures retain their
+producer's adapter LUID when passed to the virtual camera.
 
 ## 4. Input
 

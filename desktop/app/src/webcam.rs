@@ -1,25 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Phone as a webcam (`docs/protocol/webcam.md`): decodes a phone's H.264
-//! camera stream on a dedicated thread, publishes shared GPU NV12 textures or
-//! fallback BGRX frames into the mapping read by `nectarlink_vcam.dll` (the global one the
-//! camera creates inside Windows' Frame Server, or this session's while it
-//! isn't there), and feeds the live preview `VideoView` (`stream:
-//! "webcam"`) in Settings.
+//! Decodes a phone's H.264 or HEVC camera stream on a dedicated thread.
+//! Publishes NV12 GPU textures or BGRX frames to the virtual camera and feeds
+//! the Settings preview through `VideoView` (stream `webcam`).
 //!
-//! ## 4K (3840×2160) Support & Why 10-bit HDR Is Omitted
-//!
-//! End-to-end 4K UHD (`3840×2160` @ 30 fps) is supported across the phone
-//! camera encoder, the desktop H.264 decoder, the shared-memory frame
-//! transport (`nectarlink-vcam` v2), and the Media Foundation virtual camera
-//! source (`RGB32` and `NV12`).
-//!
-//! 10-bit HDR (`P010` / BT.2020 PQ or HLG) is intentionally omitted: Windows'
-//! inbox H.264 Media Foundation Transform (`CLSID_CMSH264DecoderMFT`) decodes
-//! 8-bit 4:2:0 profiles into 8-bit `NV12` (`MFVideoFormat_NV12`), and the
-//! shared-memory virtual camera pipeline operates in 8-bit-per-channel SDR
-//! Rec.709 (`BGRX` / `MFVideoFormat_RGB32` and `MFVideoFormat_NV12` with
-//! `MFVideoTransferMatrix_BT709`) for universal compatibility with conferencing
-//! apps.
+//! The transport supports up to 3840×2160 in 8-bit SDR. HDR would require
+//! P010 surfaces, BT.2020 color handling, and HDR metadata throughout the pipeline.
+//! See `docs/protocol/webcam.md`.
 
 use std::{
     sync::{
@@ -717,19 +703,17 @@ pub fn supports_hevc() -> bool {
     *SUPPORTED.get_or_init(|| match Decoder::new_gpu("h265") {
         Ok(decoder) => {
             let supported = decoder.on_gpu();
-            tracing::info!(supported, "HEVC webcam decoder probe");
+            tracing::info!(supported, "HEVC decoder probe");
             supported
         }
         Err(error) => {
-            tracing::info!(%error, "HEVC webcam decoder unavailable; advertising H.264 only");
+            tracing::info!(%error, "HEVC decoder unavailable");
             false
         }
     })
 }
 
 fn decode(device: DeviceId, items: &Receiver<Item>, waiting: &AtomicUsize) {
-    // On the GPU when there is one: 4K takes about 24 ms a frame in software
-    // and 11 ms on a GPU, against 33 ms per frame at 30 fps.
     let mut decoder = match Decoder::new_gpu("h264") {
         Ok(decoder) => decoder,
         Err(e) => {

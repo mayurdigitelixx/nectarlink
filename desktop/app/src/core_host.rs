@@ -129,11 +129,15 @@ pub fn compute_capabilities(
             caps.push(nectarlink_core::WEBCAM_VIRTUAL.into());
             if crate::webcam::supports_hevc() {
                 caps.push(nectarlink_core::WEBCAM_HEVC.into());
+                caps.push(nectarlink_core::MIRROR_HEVC.into());
             }
             caps.push(nectarlink_core::MEDIA_STREAM.into());
         }
         #[cfg(target_os = "linux")]
         {
+            if crate::win::h264::supports_hevc_hardware() {
+                caps.push(nectarlink_core::MIRROR_HEVC.into());
+            }
             if crate::win::vcam::dll_path().is_some() || crate::win::vcam::is_registered() {
                 caps.push(nectarlink_core::WEBCAM_VIRTUAL.into());
             }

@@ -1072,6 +1072,12 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         return runCatching { node?.webcamCodecs(pcId) }.getOrNull() ?: listOf("h264")
     }
 
+    /** Accepted screen codecs from the connected PC; unknown receivers use H.264. */
+    suspend fun mirrorCodecs(pcId: String): List<String> {
+        startJob?.join()
+        return runCatching { node?.mirrorCodecs(pcId) }.getOrNull() ?: listOf("h264")
+    }
+
     /** Opens this phone's camera stream to a PC (`webcam`), or emits a message on failure. */
     suspend fun webcamOpenOrMessage(pcId: String): MirrorStream? {
         startJob?.join()
@@ -1852,7 +1858,8 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             // Apps in windows of their own run on displays the Elevated helper makes.
             (if (Elevated.running && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) listOf("mirror.virtual_display") else emptyList()) +
             // Asked for when a PC wants the sound, or streamed via Elevated helper.
-            (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q || Elevated.running) listOf("mirror.audio.playback") else emptyList())
+            (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q || Elevated.running) listOf("mirror.audio.playback") else emptyList()) +
+            (if (app.nectarlink.android.mirror.ScreenEncoder.supportsHevcDecoder()) listOf("mirror.decode.hevc") else emptyList())
 
     /**
      * Triggers an immediate network/presence reconnect (e.g. when woken by
